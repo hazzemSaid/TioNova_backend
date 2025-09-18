@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Google Auth Test</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+  </head>
+  <body>
+    <h1>Google Auth Test</h1>
+    <div id="g_id_onload"
+         data-client_id="827260912271-mo4v9vdg3ovr2cra9nn4baagvqfrru6k.apps.googleusercontent.com"
+         data-callback="handleCredentialResponse"
+         data-auto_prompt="false">
+    </div>
+
+    <!-- زرار تسجيل الدخول -->
+    <div class="g_id_signin"
+         data-type="standard"
+         data-size="large"
+         data-theme="outline"
+         data-text="sign_in_with"
+         data-shape="rect"
+         data-logo_alignment="left">
+    </div>
+
+    <script>
+      async function handleCredentialResponse(response) {
+        console.log("Google ID Token:", response.credential);
+
+        try {
+          const res = await fetch("http://localhost:3000/api/auth/google", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: response.credential }),
+          });
+
+          const data = await res.json();
+          console.log("Backend response:", data);
+        } catch (err) {
+          console.error("Error calling backend:", err);
+        }
+      }
+    </script>
+  </body>
+</html>

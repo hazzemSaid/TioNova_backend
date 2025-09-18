@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: tionova-backend
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: MONGO_URI
+        fromDatabase:
+          name: tionova-mongodb
+          property: connectionString
+      - key: mongodbUsername
+        sync: false
+      - key: mongodbPassword
+        sync: false
+      - key: SALT_ROUNDS
+        value: 12
+      - key: JWT_SECRET
+        generateValue: true
+        length: 64
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+        length: 64
+      - key: MAILTRAP_TOKEN
+        sync: false
+      - key: Cloudname
+        sync: false
+      - key: APIkey
+        sync: false
+      - key: APIsecret
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: TESSERACT_CMD
+        value: /usr/bin/tesseract
+
+databases:
+  - name: tionova-mongodb
+    databaseName: tionova
+    user: tionova-user

@@ -35,7 +35,7 @@ app.use(
 );
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-async function startServer() {
+async function configureApp() {
   await connectDB();
 
   app.get("/", (req, res) => {
@@ -67,11 +67,19 @@ async function startServer() {
       data: err.data || null,
     });
   });
-  app.listen(port, () => {
-    console.log(`🚀 Server is running on http://localhost:${port}`);
+}
+
+if (process.env.VERCEL) {
+  // On Vercel, we export the configured app without listening
+  configureApp().catch((err) => console.error("❌ Failed to configure app:", err));
+} else {
+  configureApp().then(() => {
+    app.listen(port, () => {
+      console.log(`🚀 Server is running on http://localhost:${port}`);
+    });
+  }).catch((err) => {
+    console.error("❌ Failed to start server:", err);
   });
 }
 
-startServer().catch((err) => {
-  console.error("❌ Failed to start server:", err);
-});
+export default app;

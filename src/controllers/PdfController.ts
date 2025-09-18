@@ -10,6 +10,10 @@ import QuizModel from "../models/QuizModel";
 import SummaryModel from "../models/SummaryModel";
 import UserQuizStatusModel from "../models/UserQuizStatusModel";
 import ErrorHandler from "../utils/error";
+import { extractTextFromPdfBuffer, splitIntoChunks } from "../utils/pdfExtract";
+import { openrouterChat } from "../utils/openrouter";
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { jsonrepair } = require("jsonrepair");
 const createfolder = asyncWrapper(async (req, res, next) => {
     const { title, description, status, category,
         color, icon, sharedWith
@@ -75,45 +79,32 @@ const summarizecchapter = asyncWrapper(async (req, res, next) => {
             return next(ErrorHandler.createError("Chapter content is missing or invalid", 400));
         }
 
-        // Prepare form data for the Python service
-        const formData = new FormData();
-        formData.append("file", chapter.content, {
-            filename: "chapter.pdf",
-            contentType: "application/pdf",
-        });
-
-        // Check if Python service is available
-        try {
-            await axios.get("http://127.0.0.1:8000/health", { timeout: 5000 });
-        } catch (healthError) {
-            return next(ErrorHandler.createError(
-                "PDF summarization service is currently unavailable. Please try again later.",
-                503
-            ));
+        // Extract text from PDF (with OCR fallback)
+        const extractedText = await extractTextFromPdfBuffer(chapter.content as Buffer, { maxPages: 10 });
+        if (!extractedText || extractedText.trim().length < 50) {
+            return next(ErrorHandler.createError("Unable to extract sufficient text from PDF", 400));
         }
 
-        // Call the Python service with timeout
-        const summaryResponse = await axios.post(
-            "http://127.0.0.1:8000/summerypdf",
-            formData,
-            {
-                headers: { ...formData.getHeaders() },
-                timeout: 300000, // 5 minutes timeout for large PDFs
-                maxContentLength: 50 * 1024 * 1024, // 50MB max response size
-                maxBodyLength: 50 * 1024 * 1024, // 50MB max request size
-            }
-        );
+        // Build prompt similar to python service
+        const prompt = `Summarize the following text in a professional, structured JSON format suitable for displaying in an educational app. \nReturn ONLY valid JSON with these sections:\n\n1. "key_concepts": a list of main concepts, each with:\n   - "title": the concept title\n   - "text": a clear, professional explanation\n   - "tags": optional keywords\n   - "difficulty_level": optional ("easy", "medium", "hard")\n\n2. "examples": a list of practical examples for each concept, each with:\n   - "concept": the concept it illustrates\n   - "example": step-by-step calculation or explanation\n   - "notes": optional short note\n\n3. "professional_implications": list of professional applications, each with:\n   - "title": area of application\n   - "text": explanation of importance in practice\n\nEnsure:\n- Clear, concise sentences\n- Include numerical/formula examples where relevant\n- JSON is valid and parseable for direct use in an app\n\nText to summarize:\n${extractedText}`;
 
-        // Validate response
-        if (!summaryResponse.data || !summaryResponse.data.summary) {
-            console.error('Invalid response from PDF service:', summaryResponse.data);
-            return next(ErrorHandler.createError("Failed to process PDF: Invalid response from service", 500));
+        const content = await openrouterChat([
+            { role: "system", content: "You are a helpful AI assistant that provides detailed, structured responses." },
+            { role: "user", content: prompt },
+        ], { temperature: 0.7, maxTokens: 2000 });
+
+        let summaryJson: any = content;
+        try {
+            const repaired = jsonrepair(content.trim().replace(/^```(json)?/i, '').replace(/```$/,''));
+            summaryJson = JSON.parse(repaired);
+        } catch {
+            // keep raw content if JSON parse fails, to mirror python behavior
         }
 
         // Save the summary
         const summaryModel = await SummaryModel.create({
             chapterId: chapterId,
-            summary: summaryResponse.data.summary,
+            summary: summaryJson,
             createdBy: req.user._id,
             updatedBy: req.user._id,
         });
@@ -132,32 +123,10 @@ const summarizecchapter = asyncWrapper(async (req, res, next) => {
         console.error('Error in summarizecchapter:', error);
 
         // Handle specific error types
-        if (error.code === 'ECONNREFUSED') {
-            return next(ErrorHandler.createError(
-                "PDF processing service is currently unavailable. Please try again later.",
-                503
-            ));
-        } else if (error.code === 'ECONNABORTED') {
-            return next(ErrorHandler.createError(
-                "Request to PDF service timed out. The document might be too large or the service is busy.",
-                504
-            ));
-        } else if (error.response) {
-            // Handle service errors with specific status codes
-            const status = error.response.status || 500;
-            const message = error.response.data?.error || "Failed to process PDF";
-            return next(ErrorHandler.createError(message, status));
-        } else if (error.request) {
-            return next(ErrorHandler.createError(
-                "No response received from PDF processing service",
-                502
-            ));
-        } else {
-            return next(ErrorHandler.createError(
-                error.message || "An unexpected error occurred while processing the PDF",
-                500
-            ));
-        }
+        return next(ErrorHandler.createError(
+            error.message || "An unexpected error occurred while processing the PDF",
+            500
+        ));
     }
 });
 
@@ -188,76 +157,60 @@ const createquiz = asyncWrapper(async (req, res, next) => {
         const chapterContent = chapter.content;
         if (!chapterContent) return next(ErrorHandler.createError("Chapter content is required", 400));
 
-        // 1️⃣ Send content to Python MCQ generator
-        const formData = new FormData();
-
-        // Check if chapterContent is a file path or buffer
-        let fileBuffer;
+        // 1️⃣ Extract text from PDF
+        let fileBuffer: Buffer;
         if (typeof chapterContent === 'string') {
-            console.log('📁 Content is string (file path):', chapterContent);
             if (fs.existsSync(chapterContent)) {
                 fileBuffer = fs.readFileSync(chapterContent);
-                console.log('✅ File read from path, size:', fileBuffer.length);
             } else {
                 return next(ErrorHandler.createError("Chapter file not found", 404));
             }
         } else if (Buffer.isBuffer(chapterContent)) {
-            console.log('📁 Content is buffer, size:', chapterContent.length);
             fileBuffer = chapterContent;
         } else {
-            console.log('❌ Invalid content type:', typeof chapterContent);
-            console.log('Content keys:', Object.keys(chapterContent || {}));
             return next(ErrorHandler.createError("Invalid chapter content format", 400));
         }
 
-        formData.append('file', fileBuffer, {
-            filename: 'chapter.pdf',
-            contentType: 'application/pdf',
-        });
+        const text = await extractTextFromPdfBuffer(fileBuffer, { maxPages: 10 });
+        if (!text || text.trim().length < 50) {
+            return next(ErrorHandler.createError("Unable to extract sufficient text for MCQ generation", 400));
+        }
 
-        console.log('📤 Sending request to Python service...');
+        const chunks = splitIntoChunks(text, 800);
+        let selectedText = chunks[0] || text;
+        if (selectedText.length > 2000) selectedText = selectedText.slice(0, 2000);
 
-        // First check if Python service is running
+        // 2️⃣ Ask OpenRouter to create MCQs
+        const mcqPrompt = `Generate 10 multiple choice questions from this text. \nReturn the result as a valid JSON array where each question follows this exact format:\n\n[\n  {\n    "question": "What is...",\n    "options": ["a) Option 1", "b) Option 2", "c) Option 3", "d) Option 4"],\n    "answer": "a",\n    "explanation": "This is correct because..."\n  }\n]\n\nText to generate questions from:\n${selectedText}\n\nMake sure:\n1. Questions are clear and specific\n2. All 4 options are plausible\n3. Only one correct answer\n4. Answer is just the letter (a, b, c, or d)\n5. Explanation is 1-2 sentences\n6. Return valid JSON only`;
+
+        const mcqContent = await openrouterChat([
+            { role: "system", content: "You are a helpful AI assistant that creates high-quality multiple-choice questions." },
+            { role: "user", content: mcqPrompt },
+        ], { temperature: 0.7, maxTokens: 2000 });
+
+        let mcqsFromModel: any[] = [];
         try {
-            await axios.get("http://127.0.0.1:8000/health", { timeout: 5000 });
-            console.log('✅ Python service is healthy');
-        } catch (healthError) {
-            return next(ErrorHandler.createError("Python MCQ service is not available. Please make sure the Python service is running on port 8000.", 503));
+            const repaired = jsonrepair(mcqContent.trim().replace(/^```(json)?/i, '').replace(/```$/,''));
+            const parsed = JSON.parse(repaired);
+            if (Array.isArray(parsed)) mcqsFromModel = parsed;
+        } catch (e) {
+            // fallback: try regex extraction (no dotAll flag; use [\s\S])
+            const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([\s\S]*?)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
+            const matches = [...mcqContent.matchAll(pattern)];
+            for (const m of matches) {
+                const options = m[2].split(',').map(s => s.trim().replace(/^"|"$/g, ''));
+                if (options.length === 4) {
+                    mcqsFromModel.push({ question: m[1], options, answer: m[3], explanation: m[4] });
+                }
+            }
         }
 
-        const response = await axios.post("http://127.0.0.1:8000/generate_mcq", formData, {
-            headers: {
-                ...formData.getHeaders(),
-            },
-            timeout: 900000, // 15 minutes timeout similar to summary call
-            maxContentLength: 50 * 1024 * 1024, // 50MB max response size
-            maxBodyLength: 50 * 1024 * 1024, // 50MB max request size
-        });
-
-        console.log('📥 Response from Python service:', {
-            status: response.status,
-            success: response.data?.success,
-            mcqsCount: response.data?.mcqs?.length,
-            error: response.data?.error
-        });
-
-        // Check response structure
-        if (!response.data.success) {
-            return next(ErrorHandler.createError(
-                `Python service error: ${response.data.error || 'Unknown error'}`,
-                422
-            ));
+        if (!Array.isArray(mcqsFromModel) || mcqsFromModel.length === 0) {
+            return next(ErrorHandler.createError("No questions generated", 422));
         }
-
-        const mcqsFromPython = response.data.mcqs;
-        if (!Array.isArray(mcqsFromPython) || mcqsFromPython.length === 0) {
-            return next(ErrorHandler.createError("No questions generated from Python service", 422));
-        }
-
-        console.log('📋 Generated MCQs:', mcqsFromPython.length);
 
         // Validate MCQ structure
-        const validMcqs = mcqsFromPython.filter((mcq, index) => {
+        const validMcqs = mcqsFromModel.filter((mcq, index) => {
             const isValid = mcq.question &&
                 Array.isArray(mcq.options) &&
                 mcq.options.length === 4 &&

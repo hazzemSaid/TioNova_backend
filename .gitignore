@@ -36,3 +36,4 @@ Thumbs.db
 # package-lock.json
 # yarn.lock
 uploads/
+.vercel

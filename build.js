@@ -8,26 +8,31 @@ async function build() {
     // Ensure dist directory exists
     await fs.ensureDir('./dist');
     
-    // Copy static files
+    // Copy static files (if exists)
     console.log('📁 Copying static files...');
-    await fs.copy('./static', './dist/static');
+    if (await fs.pathExists('./src/static')) {
+      await fs.copy('./src/static', './dist/static');
+    } else {
+      console.log('⚠️ Static files not found, skipping...');
+    }
     
-    // Copy openapi.yaml
+    // Copy openapi.yaml (if exists)
     console.log('📄 Copying OpenAPI spec...');
-    await fs.copy('./openapi.yaml', './dist/openapi.yaml');
+    if (await fs.pathExists('./openapi.yaml')) {
+      await fs.copy('./openapi.yaml', './dist/openapi.yaml');
+    } else {
+      console.log('⚠️ OpenAPI spec not found, skipping...');
+    }
     
-    // Copy eng.traineddata (Tesseract data)
+    // Copy eng.traineddata (if exists)
     console.log('🔤 Copying Tesseract data...');
-    await fs.copy('./eng.traineddata', './dist/eng.traineddata');
+    if (await fs.pathExists('./eng.traineddata')) {
+      await fs.copy('./eng.traineddata', './dist/eng.traineddata');
+    } else {
+      console.log('⚠️ Tesseract data not found, skipping...');
+    }
     
-    // Copy Python service
-    console.log('🐍 Copying Python service...');
-    await fs.ensureDir('./dist/src/services');
-    await fs.copy('./src/services/pdf_service.py', './dist/src/services/pdf_service.py');
-    
-    // Copy requirements.txt
-    console.log('📋 Copying Python requirements...');
-    await fs.copy('./requirements.txt', './dist/requirements.txt');
+    // Note: Python service removed for Vercel deployment
     
     // Create uploads directory
     console.log('📂 Creating uploads directory...');

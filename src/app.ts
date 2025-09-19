@@ -9,12 +9,11 @@ import { connectDB } from "./database/mongodb";
 import PdfRouter from "./routers/PdfRouter";
 import UserRoute from "./routers/UserRouter";
 import { ICustomError } from "./utils/error";
-const path = require('path');
 
 const upload = multer({ dest: "uploads/" });
 const swaggerDocument = YAML.load("./openapi.yaml");
 // Load env
-const FormData = require("form-data");
+// ...existing code...
 dotenv.config();
 
 const port = process.env.PORT || 3000;

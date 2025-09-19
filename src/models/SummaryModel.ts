@@ -6,10 +6,10 @@ const SummaryModel = new mongoose.Schema({
         ref: 'Chapter',
         required: true
     },
-    summary: {
-        type: String,
-        required: true
-    },
+  summary: {
+    type: mongoose.Schema.Types.Mixed,
+    required: true
+  },
   createdAt: {
     type: Date,
     default: Date.now

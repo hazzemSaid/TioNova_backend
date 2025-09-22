@@ -1,25 +1,17 @@
 import cors from "cors";
 import * as dotenv from "dotenv";
 import express, { NextFunction, Request, Response } from "express";
-import morgan from "morgan";
-import multer from "multer";
-import swaggerUi from "swagger-ui-express";
-import YAML from "yamljs";
 import { connectDB } from "./database/mongodb";
 import PdfRouter from "./routers/PdfRouter";
 import UserRoute from "./routers/UserRouter";
 import { ICustomError } from "./utils/error";
 
-const upload = multer({ dest: "uploads/" });
-const swaggerDocument = YAML.load("./openapi.yaml");
 // Load env
-// ...existing code...
 dotenv.config();
 
 const port = process.env.PORT || 3000;
 const app = express();
 
-app.use(morgan("dev"));
 app.use(express.json());
 app.use(express.static("static"));
 app.use(
@@ -32,40 +24,44 @@ app.use(
     credentials: true,
   })
 );
-app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-async function configureApp() {
-  await connectDB();
-
-  app.get("/", (req, res) => {
-    res.send("Hello World!");
+// Configure routes synchronously (required for Vercel)
+app.get("/", (req, res) => {
+  res.status(200).json({
+    status: "OK",
+    message: "TioNova Backend Server is running",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development"
   });
+});
 
-  app.use("/api/v1", UserRoute);
-
-  app.use(
-    (err: ICustomError, req: Request, res: Response, next: NextFunction) => {
-      console.error("🔥 Error Middleware:", err);
-
-      res.status(err.statuscode || 500).json({
-        success: false,
-        message: err.message || "Something went wrong",
-        data: err.data || null,
-      });
-    }
-  );
-
-  app.get("/api/v1/health", (req, res) => {
-    return res.status(200).json({ status: "OK" });
+// Health endpoint must be defined BEFORE routers to take precedence
+app.get("/api/v1/health", (req, res) => {
+  return res.status(200).json({
+    status: "OK",
+    service: "TioNova API",
+    version: "1.0.0",
+    timestamp: new Date().toISOString()
   });
-  app.use("/api/v1", PdfRouter);
-  app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-    return res.status(err.statuscode || 500).json({
+});
+
+app.use("/api/v1", UserRoute);
+app.use("/api/v1", PdfRouter);
+
+app.use(
+  (err: ICustomError, req: Request, res: Response, next: NextFunction) => {
+    console.error("🔥 Error Middleware:", err);
+
+    res.status(err.statuscode || 500).json({
       success: false,
       message: err.message || "Something went wrong",
       data: err.data || null,
     });
-  });
+  }
+);
+
+async function configureApp() {
+  await connectDB();
 }
 
 if (process.env.VERCEL) {

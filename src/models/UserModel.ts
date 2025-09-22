@@ -1,5 +1,5 @@
 import bcrypt from 'bcrypt';
-import mongoose, { Model, Document } from 'mongoose';
+import mongoose, { Document, Model } from 'mongoose';
 
 const UserSchema = new mongoose.Schema({
 	username: {
@@ -68,8 +68,6 @@ const UserSchema = new mongoose.Schema({
 });
 
 // Indexes for better performance
-UserSchema.index({ email: 1 });
-UserSchema.index({ username: 1 });
 UserSchema.index({ googleId: 1 });
 UserSchema.index({ verificationCodeExpire: 1 }, { expireAfterSeconds: 0 }); // Auto-delete expired codes
 UserSchema.index({ resetPasswordExpire: 1 }, { expireAfterSeconds: 0 }); // Auto-delete expired reset codes

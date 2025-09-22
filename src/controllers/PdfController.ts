@@ -299,8 +299,10 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
     const { quizId, chapterId, attempt } = req.body;
     const user = req.user;
     const prv = await UserQuizStatusModel.findOne({ userId: user._id, quizId: quizId });
+    var model;
     //add the new one into attempts
     if (prv) {
+
         let score = 0;
         for (let i = 0; i < attempt.answers.length; i++) {
             if (attempt.answers[i].isCorrect) {
@@ -315,6 +317,7 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
         prv.score = score;
         prv.status = ((score / attempt.answers.length) * 100) >= 50 ? "Passed" : "Failed";
         await prv.save();
+        model = prv;
     }
     else {
         let score = 0;
@@ -335,10 +338,12 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
                 answers: attempt.answers || []
             }],
         });
+        model = userQuizStatus;
     }
     res.status(200).json({
         success: true,
-        message: "User quiz status set successfully"
+        message: "User quiz status set successfully",
+        userQuizStatus: model
     });
 });
 const updatefolder = asyncWrapper(async (req, res, next) => {
@@ -357,7 +362,19 @@ const updatefolder = asyncWrapper(async (req, res, next) => {
     res.status(200).json({
         success: true,
         message: "Folder updated successfully",
-        folder: folder,
+        folder: {
+            '_id': folder._id,
+            'title': folder.title,
+            'description': folder.description,
+            'status': folder.status,
+            'sharedWith': folder.sharedWith,
+            'icon': folder.icon,
+            'color': folder.color,
+            'category': folder.category,
+            'createdAt': folder.createdAt,
+            'ownerId': folder.ownerId
+            , 'chapterCount': 0,
+        },
     });
 });
 const getfolders = asyncWrapper(async (req, res, next) => {

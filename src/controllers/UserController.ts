@@ -27,7 +27,18 @@ for (const [key, value] of Object.entries(requiredEnvVars)) {
 	}
 }
 
+// Optional client IDs for native platforms
+const GOOGLE_IOS_CLIENT_ID = process.env.GOOGLE_IOS_CLIENT_ID;
+const GOOGLE_ANDROID_CLIENT_ID = process.env.GOOGLE_ANDROID_CLIENT_ID;
+
 const webClient = new OAuth2Client(requiredEnvVars.GOOGLE_CLIENT_ID);
+
+// Prepare accepted audiences for Google ID token verification
+const googleAudiences = [
+	requiredEnvVars.GOOGLE_CLIENT_ID as string,
+	GOOGLE_IOS_CLIENT_ID,
+	GOOGLE_ANDROID_CLIENT_ID,
+].filter(Boolean) as string[];
 
 // Utility functions
 const generateVerificationCode = (): string => {
@@ -249,6 +260,7 @@ const login = asyncWrapper(async (req, res, next) => {
 // Refresh token function
 const refreshToken = asyncWrapper(async (req, res, next) => {
 	const { refreshToken } = req.body;
+	console.log(refreshToken);
 
 	if (!refreshToken) {
 		return next(ErrorHandler.createError("Refresh token is required", 401));
@@ -257,7 +269,7 @@ const refreshToken = asyncWrapper(async (req, res, next) => {
 	try {
 		const decoded = JWT.verify(refreshToken, requiredEnvVars.JWT_REFRESH_SECRET as string) as any;
 		const user = await userModel.findById(decoded._id).select('+refreshtoken');
-
+		console.log(decoded);
 		if (!user) {
 			return next(ErrorHandler.createError("User not found", 404));
 		}
@@ -291,19 +303,25 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 		return next(ErrorHandler.createError("Validation error", 422, errors.array()));
 	}
 
-	const { token } = req.body;
-
+	// Accept both `token` and `idToken` (iOS clients commonly send `idToken`)
+	const token = req.body.token || req.body.idToken;
 	try {
-		// Verify Google token
+		// Verify Google token signature and issuer. We'll validate audience manually to support multiple platforms.
 		const ticket = await webClient.verifyIdToken({
 			idToken: token,
-			audience: requiredEnvVars.GOOGLE_CLIENT_ID,
-
 		});
 
 		const payload = ticket.getPayload();
 		if (!payload || !payload.email || !payload.email_verified) {
 			return next(ErrorHandler.createError("Invalid Google token or email not verified", 401));
+		}
+
+		// Manual audience validation against allowed client IDs
+		if (!payload.aud || !googleAudiences.includes(payload.aud)) {
+			return next(ErrorHandler.createError("Invalid Google token audience", 401, {
+				actual: payload.aud,
+				expectedAnyOf: googleAudiences
+			}));
 		}
 
 		const { email, name, picture, sub: googleId } = payload;

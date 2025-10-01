@@ -10,10 +10,6 @@ const QuizModel = new mongoose.Schema({
         type: String,
         required: true
     }
-    ,description: {
-        type: String,
-        required: false
-    }
     ,questions: {
         type: [mongoose.Schema.Types.ObjectId],
         ref: 'Question',

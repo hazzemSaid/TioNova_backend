@@ -13,9 +13,10 @@ PdfRouter.get("/getchapterquiz/:chapterId", verifyToken, PdfController.getchapte
 PdfRouter.get("/getQuizQuestions/:quizId", verifyToken, PdfController.getQuizQuestions);
 PdfRouter.get("/getChapterSummary/:chapterId", verifyToken, PdfController.getChapterSummary);
 PdfRouter.post("/setuserquizstatus", verifyToken, PdfController.setUserQuizStatus);
+PdfRouter.post("/quizhistory", verifyToken, PdfController.quizhistory);
 PdfRouter.patch("/updatefolder", verifyToken, PdfController.updatefolder);
 PdfRouter.get("/getfolders", verifyToken, PdfController.getfolders);
 PdfRouter.get("/getchapters/:folderId", verifyToken, PdfController.getchapters);
 PdfRouter.get("/getchaptercontent/:chapterId", verifyToken, PdfController.getchaptercontent);
-PdfRouter.delete("/deletefolder/:folderId",verifyToken,PdfController.deletefolder)
+PdfRouter.delete("/deletefolder/:folderId",verifyToken,PdfController.deletefolder).delete("/deletechapter/:chapterId",verifyToken,PdfController.deletechapter)
 export default PdfRouter;

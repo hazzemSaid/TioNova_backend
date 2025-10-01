@@ -150,10 +150,9 @@ const createquiz = asyncWrapper(async (req, res, next) => {
     console.log('Request body:', req.body);
     console.log('User ID:', req.user?._id);
 
-    const { chapterId, title, description } = req.body;
+    const { chapterId, } = req.body;
     try {
         if (!chapterId) return next(ErrorHandler.createError("chapterId is required", 400));
-        if (!title) return next(ErrorHandler.createError("title is required", 400));
         const chapter = await ChapterModel.findById(chapterId);
         if (!chapter) return next(ErrorHandler.createError("Chapter not found", 404));
         if (!chapter.content || !Buffer.isBuffer(chapter.content)) return next(ErrorHandler.createError("Chapter content is required", 400));
@@ -173,7 +172,71 @@ const createquiz = asyncWrapper(async (req, res, next) => {
         const response = await retryGeminiApiCall(requestBody);
         const data = await response.json();
         const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        console.log('Gemini raw MCQ response:', rawText);
+//         const rawText = `
+//  [
+//    {
+//      "question": "What does software reuse involve?",
+//      "options": ["a) Analyzing software to recover its design and specification", "b) Using existing software artifacts and knowledge to build new software", "c) Creating a representation of a higher level of abstraction", "d) Breaking software down to see how it works"],
+//      "answer": "b",
+//      "explanation": "Software reuse focuses on leveraging existing components and knowledge to create new software, rather than solely analyzing or abstracting existing systems."
+//    },
+//    {
+//      "question": "What is delivered at the end of a sprint in agile development?",
+//      "options": ["a) Test cases for the current sprint", "b) An architectural design of the solution", "c) Wireframes for the user interface", "d) An increment of working software"],
+//      "answer": "d",
+//      "explanation": "The primary deliverable of a sprint is a functional increment of the software, representing progress towards the overall project goal."
+//    },
+//    {
+//      "question": "What does a burn-down chart display?",
+//      "options": ["a) The velocity of the team", "b) The capacity of the team members", "c) The amount of remaining work with respect to time", "d) How many more items can be picked up in a sprint"],
+//      "answer": "c",
+//      "explanation": "A burn-down chart visually represents the remaining work against time, providing a clear picture of the project's progress."
+//    },
+//    {
+//      "question": "What is the main responsibility of a Scrum Master?",
+//      "options": ["a) Tracks the backlog", "b) Arranges daily meetings", "c) Measures progress against the backlog", "d) All of the above"],
+//      "answer": "d",
+//      "explanation": "The Scrum Master's role encompasses tracking the backlog, facilitating meetings, and monitoring progress against sprint goals."
+//    },
+//    {
+//      "question": "What is RAD a short form of?",
+//      "options": ["a) Rapid Application Document", "b) Relative Application Development", "c) Rapid Application Development", "d) Relative Application Document"],
+//      "answer": "c",
+//      "explanation": "RAD stands for Rapid Application Development, a software development methodology emphasizing speed and iterative development."
+//    },
+//    {
+//      "question": "When is software delivered to the customer and payment received?",
+//      "options": ["a) User story completion", "b) Iteration completion", "c) Milestone achievement", "d) All of the above"],
+//      "answer": "c",
+//      "explanation": "Software delivery and payment typically coincide with the completion of significant milestones, marking progress and value delivery."
+//    },
+//    {
+//      "question": "Which of the following is a type of cloud computing service?",
+//      "options": ["a) Software-as-a-Service (SaaS)", "b) Software-and-a-Server (SaaS)", "c) Service-as-a-Software (SaaS)", "d) Service-as-a-Server (SaaS)"],
+//      "answer": "a",
+//      "explanation": "Software as a Service (SaaS) is a common cloud computing model where software is licensed on a subscription basis and accessed over the internet."
+//    },
+//    {
+//      "question": "What is the process of establishing service requirements and constraints?",
+//      "options": ["a) Software specification", "b) Design and implementation", "c) Verification and validation", "d) System Engineering"],
+//      "answer": "a",
+//      "explanation": "Software specification defines the required services and constraints, forming the foundation for subsequent design and development phases."
+//    },
+//    {
+//      "question": "What is the typical format of a user story?",
+//      "options": ["a) I want <functionality>", "b) As a <type of user>, I want <functionality>", "c) As a <type of user>, I want <functionality> so that <reason>", "d) All of the above"],
+//      "answer": "c",
+//      "explanation": "The most comprehensive user story format includes the user role, desired functionality, and the reason behind the need."
+//    },
+//    {
+//      "question": "What is the process of gathering, analyzing, and documenting software requirements called?",
+//      "options": ["a) Feasibility Study", "b) Requirement Gathering", "c) Requirement Engineering", "d) System Requirements Specification"],
+//      "answer": "c",
+//      "explanation": "Requirement engineering is the systematic process of eliciting, analyzing, specifying, and validating software requirements."
+//    }
+//  ]
+// `;
+//         console.log('Gemini raw MCQ response:', rawText);
         let mcqsFromModel = [];
         // Try JSON.parse first
         try {
@@ -218,8 +281,7 @@ const createquiz = asyncWrapper(async (req, res, next) => {
         }
         const quiz = await QuizModel.create({
             chapterId,
-            title,
-            description: description || "",
+           title: chapter.title,
             questions: [],
             createdBy: req.user._id,
             updatedBy: req.user._id,
@@ -237,7 +299,7 @@ const createquiz = asyncWrapper(async (req, res, next) => {
         quiz.questions = questionsDocs.map(q => q._id);
         await quiz.save();
         const populatedQuiz = await QuizModel.findById(quiz._id)
-            .populate('questions')
+            .populate({ path: 'questions', select: 'question options createdAt updatedAt' })
             .populate('chapterId', 'title')
             .populate('createdBy', 'name email');
         res.status(201).json({
@@ -296,54 +358,89 @@ const getQuizQuestions = asyncWrapper(async (req, res, next) => {
     });
 });
 const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
-    const { quizId, chapterId, attempt } = req.body;
-    const user = req.user;
-    const prv = await UserQuizStatusModel.findOne({ userId: user._id, quizId: quizId });
-    var model;
-    //add the new one into attempts
-    if (prv) {
+    // Expected body:
+    // {
+    //   quizId: string,
+    //   chapterId: string,
+    //   answers: [{ questionId: string, answer: string }]
+    // }
+    const userId = req.user._id;
+    const { quizId, chapterId, answers } = req.body || {};
+    if (!quizId) return next(ErrorHandler.createError("quizId is required", 400));
+    if (!chapterId) return next(ErrorHandler.createError("chapterId is required", 400));
+    if (!Array.isArray(answers) || answers.length === 0) {
+        return next(ErrorHandler.createError("answers must be a non-empty array", 400));
+    }
 
-        let score = 0;
-        for (let i = 0; i < attempt.answers.length; i++) {
-            if (attempt.answers[i].isCorrect) {
-                score++;
-            }
-        }
-        prv.attempts.push({
-            startedAt: attempt.startedAt || Date.now(),
-            completedAt: attempt.completedAt || Date.now(),
-            answers: attempt.answers || []
-        });
-        prv.score = score;
-        prv.status = ((score / attempt.answers.length) * 100) >= 50 ? "Passed" : "Failed";
-        await prv.save();
-        model = prv;
+    const quiz = await QuizModel.findById(quizId);
+    if (!quiz) return next(ErrorHandler.createError("Quiz not found", 404));
+    if (quiz.chapterId.toString() !== chapterId.toString()) {
+        return next(ErrorHandler.createError("quizId does not belong to provided chapterId", 400));
     }
-    else {
-        let score = 0;
-        for (let i = 0; i < attempt.answers.length; i++) {
-            if (attempt.answers[i].isCorrect) {
-                score++;
-            }
-        }
-        const userQuizStatus = await UserQuizStatusModel.create({
-            userId: user._id,
-            status: ((score / attempt.answers.length) * 100) >= 50 ? "Passed" : "Failed",
-            quizId,
-            score,
-            chapterId,
-            attempts: [{
-                startedAt: attempt.startedAt || Date.now(),
-                completedAt: attempt.completedAt || Date.now(),
-                answers: attempt.answers || []
-            }],
-        });
-        model = userQuizStatus;
+
+    // Load all quiz questions
+    const questionIds = quiz.questions.map((qId: any) => new mongoose.Types.ObjectId(qId));
+    const questions = await QuestionModel.find({ _id: { $in: questionIds } });
+    const questionIdToDoc: Record<string, any> = {};
+    for (const q of questions) {
+        questionIdToDoc[q._id.toString()] = q;
     }
-    res.status(200).json({
+
+    // Normalize and grade answers
+    const gradedAnswers: Array<{ questionId: any; selectedOption: string; isCorrect: boolean; correctAnswer?: string; explanation?: string; question?: string; options?: string[]; }> = [];
+    let correctCount = 0;
+    for (const a of answers) {
+        const qId = a.questionId || a.quetionid; // tolerate misspelling from comment
+        const selected = (a.answer || "").toString().trim().toLowerCase();
+        if (!qId || !selected) continue;
+        const qDoc = questionIdToDoc[qId.toString()];
+        if (!qDoc) continue; // ignore answers for questions not in this quiz
+        const correct = (qDoc.answer || "").toString().trim().toLowerCase();
+        const isCorrect = selected === correct;
+        if (isCorrect) correctCount += 1;
+        gradedAnswers.push({
+            questionId: new mongoose.Types.ObjectId(qDoc._id),
+            selectedOption: selected,
+            isCorrect,
+            correctAnswer: correct,
+            explanation: (qDoc as any).explanation || "",
+            question: qDoc.question,
+            options: qDoc.options
+        });
+    }
+
+    const totalQuestions = questions.length;
+    const scorePercent = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+    const passThreshold = 70; // configurable
+    const status = scorePercent >= passThreshold ? "Passed" : "Failed";
+
+    // Upsert user quiz status with a new attempt
+    const attempt = {
+        startedAt: new Date(),
+        completedAt: new Date(),
+        answers: gradedAnswers
+    } as any;
+
+    const userQuizStatus = await UserQuizStatusModel.findOneAndUpdate(
+        { userId: userId, quizId: quizId, chapterId: chapterId },
+        {
+            $set: { status: status, score: scorePercent },
+            $push: { attempts: attempt }
+        },
+        { new: true, upsert: true }
+    );
+
+    return res.status(200).json({
         success: true,
-        message: "User quiz status set successfully",
-        userQuizStatus: model
+        message: "Quiz graded successfully",
+        result: {
+            totalQuestions,
+            correct: correctCount,
+            score: scorePercent,
+            status,
+            gradedAnswers
+        },
+        userQuizStatus
     });
 });
 const updatefolder = asyncWrapper(async (req, res, next) => {
@@ -412,7 +509,103 @@ const getfolders = asyncWrapper(async (req, res, next) => {
         message: "Folders retrieved successfully with chapter counts",
         folders: foldersWithChapterCount,
     });
-})
+});
+const quizhistory = asyncWrapper(async (req, res, next) => {
+    const userId = req.user._id;
+    const { chapterId } = req.body || {};
+    
+    if (!chapterId) {
+        return next(ErrorHandler.createError("chapterId is required", 400));
+    }
+
+    const statusDocs = await UserQuizStatusModel.find({ userId, chapterId })
+        .populate({
+            path: 'attempts.answers.questionId',
+            model: 'Question',
+            select: 'question options answer'
+        });
+
+    // Check if array is empty
+    if (!statusDocs || statusDocs.length === 0) {
+        return res.status(200).json({
+            success: true,
+            message: "No attempts found",
+            history: { 
+                attempts: [], 
+                overallStatus: "NotTaken", 
+                overallScore: 0,
+                totalAttempts: 0,
+                bestScore: 0,
+                averageScore: 0,
+                passRate: 0
+            }
+        });
+    }
+
+    const passThreshold = 70;
+    
+    // Flatten all attempts from all status documents
+    const allAttempts = statusDocs.flatMap((status: any) => status.attempts || []);
+    
+    // Compute per-attempt score (degree) and state
+    const attemptsWithDegree = allAttempts.map((attempt: any) => {
+        const answers = attempt.answers || [];
+        let correctCount = 0;
+        
+        for (const a of answers) {
+            const qDoc = a.questionId; // populated doc
+            const correct = (qDoc?.answer || '').toString().trim().toLowerCase();
+            const selected = (a.selectedOption || '').toString().trim().toLowerCase();
+            if (selected === correct) correctCount += 1;
+        }
+        
+        const total = answers.length;
+        const degree = total > 0 ? Math.round((correctCount / total) * 100) : 0;
+        const state = degree >= passThreshold ? "Passed" : "Failed";
+        
+        return {
+            startedAt: attempt.startedAt,
+            completedAt: attempt.completedAt,
+            totalQuestions: total,
+            correct: correctCount,
+            degree,
+            state,
+            answers: answers.map((a: any) => ({
+                question: a.questionId?.question,
+                options: a.questionId?.options,
+                correctAnswer: a.questionId?.answer,
+                selectedOption: a.selectedOption,
+                isCorrect: a.isCorrect
+            }))
+        };
+    });
+
+    // Aggregate stats
+    const totalAttempts = attemptsWithDegree.length;
+    const bestScore = totalAttempts > 0 ? Math.max(...attemptsWithDegree.map(a => a.degree)) : 0;
+    const averageScore = totalAttempts > 0 
+        ? Math.round(attemptsWithDegree.reduce((s, a) => s + a.degree, 0) / totalAttempts) 
+        : 0;
+    const passCount = attemptsWithDegree.filter(a => a.state === "Passed").length;
+    const passRate = totalAttempts > 0 ? Math.round((passCount / totalAttempts) * 100) : 0;
+
+    // Use the most recent status document or aggregate status
+    const latestStatusDoc = statusDocs[statusDocs.length - 1];
+
+    return res.status(200).json({
+        success: true,
+        message: "Quiz history retrieved successfully",
+        history: {
+            attempts: attemptsWithDegree,
+            overallStatus: latestStatusDoc.status,
+            overallScore: latestStatusDoc.score,
+            totalAttempts,
+            bestScore,
+            averageScore,
+            passRate
+        }
+    });
+});
 const getchapters = asyncWrapper(async (req, res, next) => {
     const user = req.user;
     const { folderId } = req.params;
@@ -421,30 +614,26 @@ const getchapters = asyncWrapper(async (req, res, next) => {
         { $match: { folderId: new mongoose.Types.ObjectId(folderId) } },
         {
             $lookup: {
-                from: 'userquizstatuses', // MongoDB collection name
-                localField: '_id',
-                foreignField: 'chapterId',
-                as: 'quizStatuses'
+                from: 'userquizstatuses',
+                let: { chapterId: '$_id' },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: {
+                                $and: [
+                                    { $eq: ['$chapterId', '$$chapterId'] },
+                                    { $eq: ['$userId', new mongoose.Types.ObjectId(user._id)] }
+                                ]
+                            }
+                        }
+                    },
+                    { $sort: { updatedAt: -1 } },
+                    { $limit: 1 }
+                ],
+                as: 'userQuizStatus'
             }
         },
-        {
-            $addFields: {
-                // Filter quiz statuses to only those belonging to current user
-                userQuizStatus: {
-                    $filter: {
-                        input: '$quizStatuses',
-                        as: 'status',
-                        cond: { $eq: ['$$status.userId', new mongoose.Types.ObjectId(user._id)] }
-                    }
-                }
-            }
-        },
-        {
-            $addFields: {
-                // Get the first matching status (should be only one per chapter)
-                userQuizStatusObj: { $arrayElemAt: ['$userQuizStatus', 0] }
-            }
-        },
+        { $addFields: { userQuizStatusObj: { $arrayElemAt: ['$userQuizStatus', 0] } } },
         {
             $project: {
                 _id: 1,
@@ -453,8 +642,8 @@ const getchapters = asyncWrapper(async (req, res, next) => {
                 createdAt: 1,
                 createdBy: 1,
                 summaryId: 1,
-                // Extract just the status from the userQuizStatus object or return "Not Taken" if not found
-                quizStatus: { $ifNull: ['$userQuizStatusObj.status', 'Not Taken'] },
+                // Extract just the status from the userQuizStatus object or return "NotTaken" if not found
+                quizStatus: { $ifNull: ['$userQuizStatusObj.status', 'NotTaken'] },
                 quizScore: { $ifNull: ['$userQuizStatusObj.score', 0] },
                 quizCompleted: { $cond: [{ $ifNull: ['$userQuizStatusObj', false] }, true, false] }
                 // We don't include content, contentType, or quizStatuses
@@ -494,6 +683,25 @@ const deletefolder = asyncWrapper(async (req, res, next) => {
         message: "Folder deleted  successfully",
     });
 })
+const deletechapter = asyncWrapper(async (req, res, next) => {
+    const { chapterId } = req.params;
+    const userId = req.user._id;
+    const chapter = await ChapterModel.findById(chapterId );
+      if(chapter == null){
+        return next(ErrorHandler.createError("chapter not found", 404, []));
+    }
+    const folderId = chapter.folderId;
+    const folder = await FolderModel.findById( folderId );
+    if (folder!.ownerId != userId) {
+        return next(ErrorHandler.createError("you not have access to delete it chapter Must be the owner of file ", 404, []));
+    }
+    await chapter?.deleteOne();
+    return res.status(200).json({
+        success: true,
+        message: "chapter deleted  successfully",
+    });
+
+})
 const PdfController = {
     deletefolder,
     createfolder,
@@ -505,9 +713,11 @@ const PdfController = {
     getchapterquiz,
     getQuizQuestions,
     setUserQuizStatus,
+    quizhistory,
     getchapters,
     getfolders,
-    getchaptercontent
+    getchaptercontent,
+    deletechapter
 };
 
 export default PdfController;

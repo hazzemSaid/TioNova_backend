@@ -18,5 +18,7 @@ PdfRouter.patch("/updatefolder", verifyToken, PdfController.updatefolder);
 PdfRouter.get("/getfolders", verifyToken, PdfController.getfolders);
 PdfRouter.get("/getchapters/:folderId", verifyToken, PdfController.getchapters);
 PdfRouter.get("/getchaptercontent/:chapterId", verifyToken, PdfController.getchaptercontent);
+PdfRouter.post("/getAvailableUsersForShare",verifyToken,PdfController.getAvailableUsersForShare);
+PdfRouter.post("/setuserssharewith",verifyToken,PdfController.setuserssharewith);
 PdfRouter.delete("/deletefolder/:folderId",verifyToken,PdfController.deletefolder).delete("/deletechapter/:chapterId",verifyToken,PdfController.deletechapter)
 export default PdfRouter;

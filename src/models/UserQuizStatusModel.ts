@@ -28,6 +28,10 @@ const UserQuizStatusSchema = new mongoose.Schema({
   },
   attempts: [
     {
+      timeTaken: {
+        type: Number,
+        default: 0,
+      },
       startedAt: {
         type: Date,
         default: Date.now,

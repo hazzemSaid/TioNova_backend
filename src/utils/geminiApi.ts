@@ -72,13 +72,26 @@ async function refreshCandidateEndpointsFromListModels(): Promise<void> {
 }
 
 let currentModelIndex = 0;
-
 export async function retryGeminiApiCall(requestBody: any, maxRetries = 3, initialDelay = 1000): Promise<any> {
 	let lastError;
+
+	// Inject default generationConfig if not provided
+	if (!requestBody.generationConfig) {
+		requestBody.generationConfig = {};
+	}
+	if (!requestBody.generationConfig.maxOutputTokens) {
+		requestBody.generationConfig.maxOutputTokens = 8192; // default value
+	}
+	if (!requestBody.generationConfig.temperature) {
+		requestBody.generationConfig.temperature = 0.7; // reasonable default
+	}
+
 	// Try to refresh the endpoint list once before attempting calls
 	try { await refreshCandidateEndpointsFromListModels(); } catch {}
+
 	for (let modelAttempt = 0; modelAttempt < candidateEndpoints.length; modelAttempt++) {
 		const currentUrl = candidateEndpoints[(currentModelIndex + modelAttempt) % candidateEndpoints.length];
+
 		for (let attempt = 1; attempt <= maxRetries; attempt++) {
 			try {
 				const response = await fetch(currentUrl, {
@@ -86,10 +99,12 @@ export async function retryGeminiApiCall(requestBody: any, maxRetries = 3, initi
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify(requestBody)
 				});
+
 				if (!response.ok) {
 					const errorText = await response.text();
 					throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
 				}
+
 				currentModelIndex = (currentModelIndex + modelAttempt) % candidateEndpoints.length;
 				return response;
 			} catch (error) {
@@ -102,14 +117,17 @@ export async function retryGeminiApiCall(requestBody: any, maxRetries = 3, initi
 					errObj.message.includes('RESOURCE_EXHAUSTED') ||
 					errObj.message.includes('429')
 				);
+
 				// If we got a NOT_FOUND for this URL, try to refresh model list once
 				const isNotFound = errObj.message && (errObj.message.includes('404') || errObj.message.includes('NOT_FOUND'));
 				if (isNotFound && attempt === 1 && modelAttempt === 0) {
 					try { await refreshCandidateEndpointsFromListModels(); } catch {}
 				}
+
 				if (attempt === maxRetries || !isRetryableError) {
 					break;
 				}
+
 				const delay = initialDelay * Math.pow(2, attempt - 1);
 				await new Promise(resolve => setTimeout(resolve, delay));
 			}
@@ -117,6 +135,7 @@ export async function retryGeminiApiCall(requestBody: any, maxRetries = 3, initi
 	}
 	throw lastError;
 }
+
 
 export function getMimeType(filename: string, detectedMimeType?: string): string {
 	const ext = filename.split('.').pop()?.toLowerCase() || '';

@@ -39,7 +39,7 @@ const FolderModel = new mongoose.Schema({
     }
     , status: {
         type: String,
-        enum: ['private', 'public'],
+        enum: ['private', 'public','share'],
         required: true
     }
 });

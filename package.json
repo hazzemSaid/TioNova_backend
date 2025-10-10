@@ -12,6 +12,7 @@
     "vercel-build": "npm run build"
   },
   "dependencies": {
+    "@upstash/redis": "^1.35.5",
     "axios": "^1.8.4",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.2",
@@ -37,6 +38,7 @@
     "node-cache": "^5.1.2",
     "nodemailer": "^6.10.1",
     "nsfwjs": "^4.2.1",
+    "redis": "^5.8.3",
     "resend": "^4.7.0",
     "rimraf": "^6.0.1",
     "socket.io": "^4.8.1",

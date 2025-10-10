@@ -25,25 +25,30 @@ const ChapterModel = new mongoose.Schema({
         type: Buffer, // Store PDF file as binary data
         required: true
     },
+    overcontent:{
+        type:String,
+        required:false
+    },
+  
     contentType: {
-        type: String,
-        default: "application/pdf"
-    }
+    type: String,
+    default: "application/pdf"
+}
     , createdBy: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-    }
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+}
     , updatedBy: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-    }
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+}
     , summaryId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Summary',
-        required: false
-    }
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Summary',
+    required: false
+}
 });
 
 export default mongoose.model('Chapter', ChapterModel);

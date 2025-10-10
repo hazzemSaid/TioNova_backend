@@ -1,6 +1,7 @@
 import Fuse from "fuse.js";
 import mongoose from "mongoose";
 import NodeCache from "node-cache";
+import {delCache, getCache,setCache} from "../../api/redisClient";
 import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
 import FolderModel from "../models/FolderModel";
@@ -9,8 +10,11 @@ import QuizModel from "../models/QuizModel";
 import SummaryModel from "../models/SummaryModel";
 import UserModel from "../models/UserModel";
 import UserQuizStatusModel from "../models/UserQuizStatusModel";
+import { CacheKeys } from "../utils/cache_keys";
 import ErrorHandler from "../utils/error";
+import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
 const userSearchCache = new NodeCache({ stdTTL: 300 }); // 5 min TTL
+import CacheHelper from "../utils/cacheHelper";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { jsonrepair } = require("jsonrepair");
@@ -31,8 +35,10 @@ const createfolder = asyncWrapper(async (req, res, next) => {
     let sharedWithUsers: any = [];
     try {
         if (Array.isArray(folder.sharedWith) && folder.sharedWith.length > 0) {
-            sharedWithUsers = await UserModel.find({ _id: { $in: folder.sharedWith } })
-                .select('_id username email profilePicture')
+            sharedWithUsers = await UserModel.find({
+                _id: { $in: folder.sharedWith },
+            })
+                .select("_id username email profilePicture")
                 .lean();
         }
     } catch (err) {
@@ -64,6 +70,14 @@ const createfolder = asyncWrapper(async (req, res, next) => {
     } catch (err) {
         // Ignore SSE errors
     }
+    const affectedUserIds = [
+        req.user._id.toString(),
+        ...(sharedWith || []).map((id: any) => id.toString()),
+    ];
+    
+    await Promise.all(
+        affectedUserIds.map(userId => CacheHelper.invalidateUserFolders(userId))
+    );
     res.status(200).json({
         success: true,
         message: "Folder created successfully",
@@ -77,113 +91,44 @@ const createchapter = asyncWrapper(async (req, res, next) => {
     //wrapper with token verification
     const { folderId, title, description, category } = req.body;
     const file = req.file;
+    const folder = await FolderModel.findById(folderId);
+    if (!folder) {
+        return next(ErrorHandler.createError("Folder not found", 404));
+    }
     if (!file) {
         return next(ErrorHandler.createError("PDF file is required", 400));
     }
     if (file.mimetype !== "application/pdf") {
         return next(ErrorHandler.createError("PDF file is required", 400));
     }
-    const chapter = await ChapterModel.create({
-        content: file.buffer,
-        contentType: file.mimetype,
-        createdBy: req.user._id,
-        updatedBy: req.user._id,
-        folderId: folderId,
-        title: title,
-        description: description,
-        category: category,
-    });
-    // const pdf = await pdfService.uploadpdf(file);
-    res.status(200).json({
-        success: true,
-        message: "Chapter created successfully",
-    });
-});
-const summarizecchapter = asyncWrapper(async (req, res, next) => {
-    const { chapterId } = req.body;
-    if (!chapterId) {
-        return next(ErrorHandler.createError("chapterId is required", 400));
-    }
-
-    const chapter = await ChapterModel.findById(chapterId);
-    if (!chapter) {
-        return next(ErrorHandler.createError("Chapter not found", 404));
-    }
-
-    // CHECK CACHE: If summary already exists for this chapter, return it
-    if (chapter.summaryId) {
-        const existingSummary = await SummaryModel.findById(chapter.summaryId);
-        if (existingSummary) {
-            return res.status(200).json({
-                success: true,
-                message: "Chapter summary retrieved from cache",
-                summary: existingSummary.summary,
-                summaryModel: existingSummary,
-                cached: true,
-            });
-        }
-    }
-
-    if (!chapter.content || !Buffer.isBuffer(chapter.content)) {
-        return next(
-            ErrorHandler.createError("Chapter content is missing or invalid", 400)
-        );
-    }
-
-    // Prepare Gemini API request
+    // make overcontent to get the content for pdf
     const { retryGeminiApiCall, getMimeType } = require("../utils/geminiApi");
-    const base64File = chapter.content.toString("base64");
-    const mimeType = getMimeType("chapter.pdf", chapter.contentType);
     const requestBody = {
         contents: [
             {
                 parts: [
                     {
-                        text: `You are a highly detailed academic assistant that **converts educational PDFs into structured JSON**.
-      
-      Task:
-      - Carefully analyze the provided PDF content.
-      - Output **only valid JSON** strictly following the schema below.
-      - Do not include any text, markdown, comments, or explanations outside the JSON.
-      - The output must be **directly parseable JSON** (no errors, no trailing commas).
-      
-      Schema:
-      
-      {
-        "key_concepts": [
-          {
-            "title": "Concise concept title",
-            "text": "Detailed explanation in 5–8 academic sentences. The text should highlight definitions, theory, context, and connections to related concepts.",
-            "tags": ["keyword1", "keyword2", "keyword3"],
-            "difficulty_level": "easy | medium | hard"
-          }
-        ],
-        "examples": [
-          {
-            "concept": "Reference to related concept title",
-            "example": "Worked-out example with step-by-step reasoning, using real numbers, equations, or problem-solving steps.",
-            "notes": "Optional practical insight, clarification, or common mistake in one short sentence."
-          }
-        ],
-        "professional_implications": [
-          {
-            "title": "Relevant professional field (e.g., Engineering, Medicine, Computer Science, Business)",
-            "text": "In-depth explanation of how the concept is used in real-world practice, why it matters, and its implications in that field."
-          }
-        ]
-      }
-      
-      Guidelines:
-      - Always include at least 3–5 key_concepts.
-      - Provide at least 2 examples (with real calculations, step-by-step if possible).
-      - Each professional_implication should connect theory to real-world professional impact.
-      - Ensure the tone is formal, academic, and precise.
-      - Never output empty arrays: if no data, omit that section completely.
-      - Never output markdown, code fences, or explanations — only the JSON object.
-      
-      Now process the following PDF content:`,
+                        text: `
+You are an expert document cleaning and text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and complete text version of its content.
+
+**Instructions:**
+1. **Extract all text.** Capture all readable text from the document, including headings, paragraphs, and lists.
+2. **Remove noise and artifacts.** Eliminate OCR errors, visual artifacts, duplicated phrases, page numbers, headers, and footers.
+3. **Structure and normalize content.**
+    * Reconstruct broken sentences and paragraphs.
+    * Maintain the original hierarchy of chapters, sections, and sub-sections.
+    * Preserve bullet points, numbered lists, and code blocks.
+4. **Final output:** Provide ONLY the cleaned, raw text content of the document. Do not summarize, interpret, or add any commentary. The final output must be ready for further AI analysis, such as quiz generation.
+
+**Output format:** Return the full, uninterpreted text in a single, well-formatted string.
+`,
                     },
-                    { inlineData: { mimeType, data: base64File } },
+                    {
+                        inlineData: {
+                            mimeType: getMimeType(file.originalname),
+                            data: file.buffer.toString("base64"), // send PDF to Gemini
+                        },
+                    },
                 ],
             },
         ],
@@ -192,319 +137,410 @@ const summarizecchapter = asyncWrapper(async (req, res, next) => {
 
     const response = await retryGeminiApiCall(requestBody);
     const data = await response.json();
-    let summaryJson;
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    try {
-        summaryJson = JSON.parse(rawText);
-    } catch (e) {
-        try {
-            summaryJson = JSON.parse(jsonrepair(rawText));
-        } catch (e2) {
-            return next(ErrorHandler.createError((e2 as any).toString(), 400));
-        }
+    const chapter = await ChapterModel.create({
+        content: file.buffer,
+        contentType: file.mimetype,
+        createdBy: req.user._id,
+        updatedBy: req.user._id,
+        folderId: folderId,
+        overcontent: data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null,
+        title: title,
+        description: description,
+        category: category,
+    });
+    if (data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+        const overcontentKey = CacheKeys.getChapterOverContentKey(chapter._id.toString());
+        await CacheHelper.set(
+            overcontentKey,
+            data.candidates[0].content.parts[0].text,
+            CacheKeys.TTL.ONE_WEEK
+        );
     }
 
-    // Ensure the summary matches the required structure
-    const mappedSummary = {
-        key_concepts: Array.isArray(summaryJson?.key_concepts)
-            ? summaryJson.key_concepts
-            : [],
-        examples: Array.isArray(summaryJson?.examples) ? summaryJson.examples : [],
-        professional_implications: Array.isArray(
-            summaryJson?.professional_implications
-        )
-            ? summaryJson.professional_implications
-            : [],
-    };
-
-    // If Gemini output contains the required keys, save and return
-    if (
-        Array.isArray(summaryJson?.key_concepts) &&
-        Array.isArray(summaryJson?.examples) &&
-        Array.isArray(summaryJson?.professional_implications)
-    ) {
-        const summaryModel = await SummaryModel.create({
-            chapterId: chapterId,
-            summary: summaryJson,
-            createdBy: req.user._id,
-            updatedBy: req.user._id,
-        });
-
-        chapter.summaryId = summaryModel._id;
-        await chapter.save();
-
-        return res.status(200).json({
-            success: true,
-            message: "Chapter summarized successfully",
-            summary: summaryJson,
-            summaryModel: summaryModel,
-            cached: false,
-        });
-    }
-
-    // Fallback: try to extract JSON from markdown code block or repair
-    let rawJson = {};
-    let cleanedText = rawText;
-    const codeBlockMatch = cleanedText.match(/```json\s*([\s\S]*?)```/i);
-    if (codeBlockMatch) {
-        cleanedText = codeBlockMatch[1];
-    }
-
-    try {
-        rawJson = JSON.parse(cleanedText);
-    } catch (e) {
-        try {
-            rawJson = JSON.parse(jsonrepair(cleanedText));
-        } catch (e2) {
-            rawJson = { raw: rawText };
-        }
-    }
-
-    return res.status(200).json({
-        success: false,
-        message:
-            "Gemini did not generate a valid summary. See raw response for troubleshooting.",
-        rawGeminiResponse: rawJson,
+    // ✅ Invalidate chapters list for all affected users
+    const affectedUsers = [
+        folder.ownerId.toString(),
+        ...(folder.sharedWith || []).map((id: any) => id.toString()),
+    ];
+    
+    await CacheHelper.invalidateChaptersList(folderId, affectedUsers);
+    res.status(200).json({
+        success: true,
+        message: "Chapter created successfully",
     });
 });
-
-const createquiz = asyncWrapper(async (req, res, next) => {
-    console.log("=== CREATE QUIZ START ===");
-    console.log("Request body:", req.body);
-    console.log("User ID:", req.user?._id);
-
+const summarizecchapter = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
+    const user = req.user as any;
 
-    try {
-        if (!chapterId)
-            return next(ErrorHandler.createError("chapterId is required", 400));
+    if (!chapterId) {
+        return next(ErrorHandler.createError("chapterId is required", 400));
+    }
 
-        const chapter = await ChapterModel.findById(chapterId);
-        if (!chapter)
-            return next(ErrorHandler.createError("Chapter not found", 404));
+    const summaryKey = CacheKeys.getSummaryKey(chapterId);
 
-        // CHECK CACHE: Look for existing quiz for this chapter
-        const existingQuiz = await QuizModel.findOne({ chapterId }).populate({
-            path: "questions",
-            select: "question options answer explanation createdAt updatedAt",
+    // ✅ Try cache first
+    const cachedSummary = await CacheHelper.get(summaryKey);
+    if (cachedSummary) {
+        return res.status(200).json({
+            success: true,
+            message: "Retrieved summary from cache",
+            summary: cachedSummary,
+            cached: true,
         });
+    }
 
-        if (
-            existingQuiz &&
-            existingQuiz.questions &&
-            existingQuiz.questions.length > 0
-        ) {
-            const totalCachedQuestions = existingQuiz.questions.length;
+    // ✅ Try MongoDB
+    const chapter = await ChapterModel.findById(chapterId);
+    if (!chapter) {
+        return next(ErrorHandler.createError("Chapter not found", 404));
+    }
 
-            // If cached quiz has 50+ questions, return random 15
-            if (totalCachedQuestions >= 50) {
-                const shuffled = [...existingQuiz.questions].sort(
-                    () => 0.5 - Math.random()
-                );
-                const selectedQuestions = shuffled.slice(0, 15);
-
-                return res.status(200).json({
-                    success: true,
-                    message: "Quiz retrieved from cache (random selection)",
-                    quiz: {
-                        ...existingQuiz.toObject(),
-                        questions: selectedQuestions,
-                    },
-                    totalQuestions: selectedQuestions.length,
-                    totalCachedQuestions: totalCachedQuestions,
-                    cached: true,
-                });
-            }
-
-            // If cached quiz has less than 50 questions, return all with option to generate more
+    if (chapter.summaryId) {
+        const summaryModel = await SummaryModel.findById(chapter.summaryId);
+        if (summaryModel) {
+            // Repopulate cache
+            await CacheHelper.set(
+                summaryKey,
+                summaryModel.summary,
+                CacheKeys.TTL.ONE_WEEK
+            );
+            
             return res.status(200).json({
                 success: true,
-                message: "Quiz retrieved from cache",
-                quiz: existingQuiz,
-                totalQuestions: totalCachedQuestions,
-                totalCachedQuestions: totalCachedQuestions,
-                cached: true,
-                canGenerateMore: true,
+                message: "Retrieved summary from database",
+                summary: summaryModel.summary,
+                cached: false,
             });
         }
+    }
 
-        // No cache found, generate new quiz
-        if (!chapter.content || !Buffer.isBuffer(chapter.content)) {
-            return next(ErrorHandler.createError("Chapter content is required", 400));
-        }
+    // ✅ Generate new summary
+    const chapterContent = chapter.overcontent || chapter.content?.toString("utf-8") || "";
+    
+    if (!chapterContent) {
+        return next(ErrorHandler.createError("Chapter content missing", 400));
+    }
 
-        const { retryGeminiApiCall, getMimeType } = require("../utils/geminiApi");
-        const base64File = chapter.content.toString("base64");
-        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+    const base64File = chapter.content?.toString("base64") || "";
+    const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+    
+    const requestBody = {
+        contents: [
+            {
+                parts: [
+                    {
+                        text: `You are a highly detailed academic assistant that **converts educational content into structured JSON**.
+                    
+                        Task:
+                        - Carefully analyze the provided content.
+                        - Output **only valid JSON** strictly following the schema below.
+                        - Do not include any text, markdown, comments, or explanations outside the JSON.
+                        - The output must be **directly parseable JSON** (no errors, no trailing commas).
+                        
+                        Schema:
+                        
+                        {
+                          "key_concepts": [
+                            {
+                              "title": "Concise concept title",
+                              "text": "Detailed explanation in 5–8 academic sentences. The text should highlight definitions, theory, context, and connections to related concepts.",
+                              "tags": ["keyword1", "keyword2", "keyword3"],
+                              "difficulty_level": "easy | medium | hard"
+                            }
+                          ],
+                          "examples": [
+                            {
+                              "concept": "Reference to related concept title",
+                              "example": "Worked-out example with step-by-step reasoning, using real numbers, equations, or problem-solving steps.",
+                              "notes": "Optional practical insight, clarification, or common mistake in one short sentence."
+                            }
+                          ],
+                          "professional_implications": [
+                            {
+                              "title": "Relevant professional field (e.g., Engineering, Medicine, Computer Science, Business)",
+                              "text": "In-depth explanation of how the concept is used in real-world practice, why it matters, and its implications in that field."
+                            }
+                          ]
+                        }
+                        
+                        Guidelines:
+                        - Always include at least 3–5 key_concepts.
+                        - Provide at least 2 examples (with real calculations, step-by-step if possible).
+                        - Each professional_implication should connect theory to real-world professional impact.
+                        - Ensure the tone is formal, academic, and precise.
+                        - Never output empty arrays: if no data, omit that section completely.
+                        - Never output markdown, code fences, or explanations — only the JSON object.
+                        
+                        Now process the following content:
+                        ${chapter.overcontent || ""}`,
+                    },
+                    ...(chapter.overcontent ? [] : [
+                        { inlineData: { mimeType, data: base64File } }
+                    ]),
+                ],
+            },
+        ],
+        generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
+    };
 
-        const mcqPrompt = `
-        You are an assistant that creates quizzes.
-        
-        Task:
-        Generate **exactly 50 multiple choice questions** from the provided PDF to build a comprehensive question bank.
-        
-        Format:
-        [
-          {
-            "question": "Clear question text?",
-            "options": ["a) Option 1", "b) Option 2", "c) Option 3", "d) Option 4"],
-            "answer": "a",
-            "explanation": "Short explanation why this is correct."
-          }
-        ]
-        
-        Rules:
-        - Return ONLY a JSON array, no markdown, no comments.
-        - Each "options" must have exactly 4 items.
-        - "answer" must be one letter only: a, b, c, or d.
-        - "explanation" should be 1–2 professional sentences.
-        - Cover different parts of the chapter comprehensively.
-        - Vary difficulty levels (easy, medium, hard).
-        - Ensure the JSON is parseable directly.
-        Now generate 50 questions based on the PDF content:
-        `;
-
-        const requestBody = {
-            contents: [
-                {
-                    parts: [
-                        { text: mcqPrompt },
-                        { inlineData: { mimeType, data: base64File } },
-                    ],
-                },
-            ],
-            generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
-        };
-
-        const response = await retryGeminiApiCall(requestBody);
-        const data = await response.json();
-        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        let mcqsFromModel = [];
-
-        // Try JSON.parse first
+    const response = await retryGeminiApiCall(requestBody);
+    const data = await response.json();
+    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    
+    let summaryJson;
+    try {
+        summaryJson = JSON.parse(rawText);
+    } catch {
         try {
-            mcqsFromModel = JSON.parse(rawText);
-        } catch (e) {
-            // Fallback: try to repair JSON
-            try {
-                mcqsFromModel = JSON.parse(jsonrepair(rawText));
-            } catch (e2) {
-                // Fallback: regex extraction
-                const pattern =
-                    /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
-                const matches = [...rawText.matchAll(pattern)];
-                for (const m of matches) {
-                    const options = m[2]
-                        .split(",")
-                        .map((s: any) => s.trim().replace(/^"|"$/g, ""));
-                    if (options.length === 4) {
-                        mcqsFromModel.push({
-                            question: m[1],
-                            options,
-                            answer: m[3],
-                            explanation: m[4],
-                        });
-                    }
-                }
-            }
+            const { jsonrepair } = require("jsonrepair");
+            summaryJson = JSON.parse(jsonrepair(rawText));
+        } catch (err) {
+            return next(ErrorHandler.createError("Invalid Gemini JSON response", 400));
+        }
+    }
+
+    // Save in MongoDB
+    const summaryModel = await SummaryModel.create({
+        chapterId,
+        summary: summaryJson,
+        createdBy: user._id,
+        updatedBy: user._id,
+    });
+
+    chapter.summaryId = summaryModel._id;
+    await chapter.save();
+
+    // ✅ Cache the result
+    await CacheHelper.set(summaryKey, summaryJson, CacheKeys.TTL.ONE_WEEK);
+
+    return res.status(200).json({
+        success: true,
+        message: "Chapter summarized successfully",
+        summary: summaryJson,
+        summaryModel,
+        cached: false,
+    });
+});const createquiz = asyncWrapper(async (req, res, next) => {
+    const { chapterId } = req.body;
+    
+    if (!chapterId) {
+        return next(ErrorHandler.createError("chapterId is required", 400));
+    }
+
+    let quiz: any = null;
+    let cachedQuestions: any[] = [];
+    let quizId: string | null = null;
+    let quizTitle: string = "";
+
+    try {
+        // ✅ Load from cache using helper
+        const cachedQuiz = await CacheHelper.getCachedQuiz(chapterId);
+        
+        if (cachedQuiz) {
+            quizId = cachedQuiz.quizId;
+            quizTitle = cachedQuiz.title;
+            cachedQuestions = cachedQuiz.questions;
         }
 
-        if (!Array.isArray(mcqsFromModel) || mcqsFromModel.length === 0) {
-            return next(
-                ErrorHandler.createError(
-                    `No questions generated by Gemini. Raw response: ${rawText.substring(0, 500)}`,
-                    422
-                )
-            );
-        }
-
-        const validMcqs = mcqsFromModel.filter((mcq) => {
-            return (
-                mcq.question &&
-                Array.isArray(mcq.options) &&
-                mcq.options.length === 4 &&
-                mcq.answer &&
-                ["a", "b", "c", "d"].includes(mcq.answer.toLowerCase())
-            );
-        });
-
-        if (validMcqs.length === 0) {
-            return next(
-                ErrorHandler.createError(
-                    `Gemini returned MCQs, but none were valid. Raw response: ${rawText.substring(0, 500)}`,
-                    422
-                )
-            );
-        }
-
-        // Create quiz with all questions for caching
-        const quiz = await QuizModel.create({
-            chapterId,
-            title: chapter.title,
-            questions: [],
-            createdBy: req.user._id,
-            updatedBy: req.user._id,
-        });
-
-        const questionsData = validMcqs.map((mcq) => ({
-            quizId: quiz._id,
-            question: mcq.question,
-            options: mcq.options,
-            answer: mcq.answer.toLowerCase(),
-            explanation: mcq.explanation || "",
-            createdBy: req.user._id,
-            updatedBy: req.user._id,
-        }));
-
-        const questionsDocs = await QuestionModel.insertMany(questionsData);
-        quiz.questions = questionsDocs.map((q) => q._id);
-        await quiz.save();
-
-        // Return random 15 questions if we have 50+, otherwise return all
-        let questionsToReturn = questionsDocs;
-        if (questionsDocs.length >= 50) {
-            const shuffled = [...questionsDocs].sort(() => 0.5 - Math.random());
-            questionsToReturn = shuffled.slice(0, 15);
-        }
-
-        const populatedQuiz = await QuizModel.findById(quiz._id)
-            .populate({
-                path: "questions",
-                select: "question options createdAt updatedAt",
-            })
-            .populate("chapterId", "title")
-            .populate("createdBy", "name email");
-
-        if (!populatedQuiz) {
-            return next(
-                ErrorHandler.createError("Failed to retrieve created quiz", 500)
-            );
-        }
-
-        res.status(201).json({
-            success: true,
-            message: "Quiz created successfully",
-            quiz: {
-                ...populatedQuiz.toObject(),
-                questions: questionsToReturn.map((q) => ({
+        // ✅ Load from DB if cache empty
+        if (cachedQuestions.length === 0) {
+            const existingQuiz = await QuizModel.findOne({ chapterId }).populate("questions");
+            
+            if (existingQuiz) {
+                quiz = existingQuiz;
+                quizId = existingQuiz._id.toString();
+                quizTitle = existingQuiz.title;
+                cachedQuestions = existingQuiz.questions.map((q: any) => ({
                     _id: q._id,
                     question: q.question,
                     options: q.options,
-                    createdAt: q.createdAt,
-                    updatedAt: q.updatedAt,
-                })),
+                }));
+
+                // Cache it
+                await CacheHelper.cacheQuiz(
+                    chapterId,
+                    { quizId, title: quizTitle, questions: cachedQuestions },
+                    CacheKeys.TTL.ONE_DAY
+                );
+            }
+        }
+
+        // ✅ Generate new questions if less than 50
+        if (cachedQuestions.length < 50) {
+            const chapter = await ChapterModel.findById(chapterId);
+            
+            if (!chapter || (!chapter.overcontent && !Buffer.isBuffer(chapter.content))) {
+                return next(ErrorHandler.createError("Chapter content is required", 400));
+            }
+
+            quizTitle = chapter.title;
+            const needed = 50 - cachedQuestions.length;
+            const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
+
+            const mcqPrompt = `
+You are an AI assistant that creates multiple choice quizzes.
+Generate exactly ${needed} new questions from the provided content.
+Do NOT repeat any of the questions listed below.
+
+Existing questions:
+${existingTexts}
+
+Format (JSON only):
+[
+  {
+    "question": "Your question text?",
+    "options": ["a) Option1", "b) Option2", "c) Option3", "d) Option4"],
+    "answer": "a",
+    "explanation": "1–2 sentence explanation."
+  }
+]
+`;
+
+            const contents: any[] = [{ parts: [{ text: mcqPrompt }] }];
+            
+            if (!chapter.overcontent) {
+                const base64File = chapter.content.toString("base64");
+                const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+                contents[0].parts.push({ 
+                    inlineData: { mimeType, data: base64File } 
+                });
+            }
+
+            const requestBody = {
+                contents,
+                generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+            };
+
+            const response = await retryGeminiApiCall(requestBody);
+            const data = await response.json();
+            const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+            // Parse Gemini output
+            let newMcqs: any[] = [];
+            try {
+                newMcqs = JSON.parse(rawText);
+            } catch {
+                try {
+                    const { jsonrepair } = require("jsonrepair");
+                    newMcqs = JSON.parse(jsonrepair(rawText));
+                } catch {
+                    const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
+                    const matches = [...rawText.matchAll(pattern)];
+                    
+                    for (const m of matches) {
+                        const options = m[2].split(",").map((s: any) => 
+                            s.trim().replace(/^"|"$/g, "")
+                        );
+                        
+                        if (options.length === 4) {
+                            newMcqs.push({
+                                question: m[1],
+                                options,
+                                answer: m[3],
+                                explanation: m[4],
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Filter and validate
+            newMcqs = newMcqs.filter(
+                (mcq) =>
+                    mcq.question &&
+                    Array.isArray(mcq.options) &&
+                    mcq.options.length === 4 &&
+                    ["a", "b", "c", "d"].includes(mcq.answer?.toLowerCase())
+            ).slice(0, needed);
+
+            // Ensure quiz exists
+            if (!quiz) {
+                quiz = await QuizModel.findOne({ chapterId }) ||
+                    await QuizModel.create({
+                        chapterId,
+                        title: chapter.title,
+                        questions: [],
+                        createdBy: req.user._id,
+                        updatedBy: req.user._id,
+                    });
+                quizId = quiz._id.toString();
+            }
+
+            // Save new questions
+            const questionDocs = await QuestionModel.insertMany(
+                newMcqs.map((mcq) => ({
+                    quizId: quiz._id,
+                    question: mcq.question,
+                    options: mcq.options,
+                    answer: mcq.answer.toLowerCase(),
+                    explanation: mcq.explanation,
+                    createdBy: req.user._id,
+                    updatedBy: req.user._id,
+                }))
+            );
+
+            quiz.questions.push(...questionDocs.map((q) => q._id));
+            await quiz.save();
+
+            cachedQuestions.push(
+                ...questionDocs.map((q) => ({
+                    _id: q._id,
+                    question: q.question,
+                    options: q.options,
+                }))
+            );
+
+            // ✅ Update cache
+            await CacheHelper.cacheQuiz(
+                chapterId,
+                { quizId: quiz._id.toString(), title: quizTitle, questions: cachedQuestions },
+                CacheKeys.TTL.ONE_DAY
+            );
+        }
+
+        // Get quiz if not loaded
+        if (!quiz && quizId) {
+            quiz = await QuizModel.findById(quizId);
+        }
+
+        // ✅ Randomly pick 15 questions
+        const shuffled = [...cachedQuestions].sort(() => 0.5 - Math.random());
+        const questionsToReturn = shuffled.slice(0, 15).map((q) => ({
+            _id: q._id,
+            question: q.question,
+            options: q.options,
+        }));
+
+        res.status(200).json({
+            success: true,
+            message: "Quiz retrieved/generated successfully",
+            quiz: {
+                _id: quiz?._id || quizId,
+                title: quiz?.title || quizTitle,
+                questions: questionsToReturn,
             },
-            totalQuestions: questionsToReturn.length,
-            totalCachedQuestions: questionsDocs.length,
-            cached: false,
+            totalQuestions: 15,
         });
     } catch (error) {
         console.error("Error creating quiz:", error);
-        const errMsg = (error as any).message || "Failed to create quiz";
-        return next(ErrorHandler.createError(errMsg, 500));
+        return next(ErrorHandler.createError("Failed to create quiz", 500));
     }
 });
+// --- Helper functions ---
+function mergeUniqueByQuestion(arr1: any[], arr2: any[]) {
+    const map = new Map();
+    [...arr1, ...arr2].forEach((q) => {
+        if (!map.has(q.question)) map.set(q.question, q);
+    });
+    return Array.from(map.values());
+}
+
+function shuffle(array: any[]) {
+    return array.sort(() => 0.5 - Math.random());
+}
+
 const getChapterSummary = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.params;
     const chapter = await ChapterModel.findById(chapterId);
@@ -645,7 +681,7 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
         success: true,
         message: "Quiz graded successfully",
         result: {
-            totalQuestions,
+            totalQuestions: 15,
             correct: correctCount,
             score: scorePercent,
             status,
@@ -685,34 +721,60 @@ const updatefolder = asyncWrapper(async (req, res, next) => {
     folder.color = color ?? folder.color;
     folder.category = category ?? folder.category;
     await folder.save();
-    // SSE: Notify owner and shared users
-    try {
-        const { sendEventToUser } = require("./sseController");
-        // Notify shared users
-        if (Array.isArray(folder.sharedWith)) {
-            folder.sharedWith.forEach((uid: any) => {
-                sendEventToUser(uid.toString(), {
-                    type: "folder_shared_updated",
-                    folderId: folder._id,
-                    folder,
-                });
-            });
-        }
-    } catch (err) {
-        // Ignore SSE errors
-    }
-    // Always return sharedWith as array of {_id, username} objects
+  
+    // Always return sharedWith as array of {_id, username, email, profilePicture}
+    const oldSharedWith = folder.sharedWith || [];
+    const newSharedWith = sharedWith || [];
     let sharedWithUsers: any = [];
     try {
         if (Array.isArray(folder.sharedWith) && folder.sharedWith.length > 0) {
-            sharedWithUsers = await UserModel.find({ _id: { $in: folder.sharedWith } })
-                .select('_id username profilePicture email')
+            sharedWithUsers = await UserModel.find({
+                _id: { $in: folder.sharedWith },
+            })
+                .select("_id username profilePicture email")
                 .lean();
         }
     } catch (err) {
         // fallback: return empty array if error
         sharedWithUsers = [];
     }
+    // SSE: Notify owner and shared users
+    try {
+        const { sendEventToUser } = require("./sseController");
+        // Notify owner
+        sendEventToUser(folder.ownerId.toString(), {
+            type: "folder_updated",
+            folder: {
+                ...folder.toObject(),
+                sharedWith: sharedWithUsers,
+            },
+        });
+        // Notify shared users
+        if (Array.isArray(folder.sharedWith)) {
+            folder.sharedWith.forEach((uid: any) => {
+                sendEventToUser(uid.toString(), {
+                    type: "folder_shared_updated",
+                    folder: {
+                        ...folder.toObject(),
+                        sharedWith: sharedWithUsers,
+                    },
+                });
+            });
+        }
+    } catch (err) {
+        // Ignore SSE errors
+    }
+    const allAffectedUsers = new Set([
+        folder.ownerId.toString(),
+        ...oldSharedWith.map((id: any) => id.toString()),
+        ...newSharedWith.map((id: any) => id.toString()),
+    ]);
+
+    await Promise.all(
+        Array.from(allAffectedUsers).map(userId => 
+            CacheHelper.invalidateUserFolders(userId)
+        )
+    );
     res.status(200).json({
         success: true,
         message: "Folder updated successfully",
@@ -733,73 +795,76 @@ const updatefolder = asyncWrapper(async (req, res, next) => {
 });
 const getfolders = asyncWrapper(async (req, res, next) => {
     const user = req.user;
-    // Use aggregation to get folders with chapter counts
-    const foldersWithChapterCount = await FolderModel.aggregate([
-        // 1️⃣ Match folders owned by the user or shared with them
-        {
-            $match: {
-                $or: [
-                    { ownerId: new mongoose.Types.ObjectId(user._id) },
-                    {
-                        sharedWith: {
-                            $elemMatch: { $eq: new mongoose.Types.ObjectId(user._id) },
-                        },
+    const userId = user._id.toString();
+
+    // ✅ Use cache helper with getOrSet pattern
+    const { data: folders, cached } = await CacheHelper.getOrSet(
+        CacheKeys.getFoldersListKey(userId),
+        async () => {
+            // Aggregate folders with chapter counts
+            const foldersWithChapterCount = await FolderModel.aggregate([
+                {
+                    $match: {
+                        $or: [
+                            { ownerId: new mongoose.Types.ObjectId(user._id) },
+                            {
+                                sharedWith: {
+                                    $elemMatch: { $eq: new mongoose.Types.ObjectId(user._id) },
+                                },
+                            },
+                        ],
                     },
-                ],
-            },
-        },
-
-        // 2️⃣ Lookup chapters to count them
-        {
-            $lookup: {
-                from: "chapters",
-                localField: "_id",
-                foreignField: "folderId",
-                as: "chapters",
-            },
-        },
-
-        // 3️⃣ Lookup to fetch shared user details
-        {
-            $lookup: {
-                from: "users",
-                localField: "sharedWith",
-                foreignField: "_id",
-                as: "sharedUsers",
-                pipeline: [
-                    {
-                        $project: {
-                            _id: 1,
-                            username: 1, // ✅ only these two fields
-                            profilePicture: 1,
-                            email: 1,
-                        },
+                },
+                {
+                    $lookup: {
+                        from: "chapters",
+                        localField: "_id",
+                        foreignField: "folderId",
+                        as: "chapters",
                     },
-                ],
-            },
-        },
+                },
+                {
+                    $lookup: {
+                        from: "users",
+                        localField: "sharedWith",
+                        foreignField: "_id",
+                        as: "sharedUsers",
+                        pipeline: [
+                            {
+                                $project: {
+                                    _id: 1,
+                                    username: 1,
+                                    profilePicture: 1,
+                                    email: 1,
+                                },
+                            },
+                        ],
+                    },
+                },
+                {
+                    $addFields: {
+                        chapterCount: { $size: "$chapters" },
+                        sharedWith: "$sharedUsers",
+                    },
+                },
+                {
+                    $project: {
+                        chapters: 0,
+                        sharedUsers: 0,
+                    },
+                },
+            ]);
 
-        // 4️⃣ Add a field for chapter count
-        {
-            $addFields: {
-                chapterCount: { $size: "$chapters" },
-                sharedWith: "$sharedUsers", // rename for cleaner response
-            },
+            return foldersWithChapterCount;
         },
-
-        // 5️⃣ Remove unneeded fields
-        {
-            $project: {
-                chapters: 0,
-                sharedUsers: 0, // already renamed to sharedWith
-            },
-        },
-    ]);
+        CacheKeys.TTL.SIX_HOURS
+    );
 
     res.status(200).json({
         success: true,
-        message: "Folders retrieved successfully with chapter counts",
-        folders: foldersWithChapterCount,
+        message: "Folders retrieved successfully",
+        folders,
+        cached,
     });
 });
 const quizhistory = asyncWrapper(async (req, res, next) => {
@@ -809,7 +874,17 @@ const quizhistory = asyncWrapper(async (req, res, next) => {
     if (!chapterId) {
         return next(ErrorHandler.createError("chapterId is required", 400));
     }
-
+    const cacheKey = CacheKeys.getUserQuizHistoryKey(userId, chapterId);
+    const cachedHistory = await CacheHelper.get(cacheKey);
+    
+    if (cachedHistory) {
+        return res.status(200).json({
+            success: true,
+            message: "Quiz history retrieved from cache",
+            history: cachedHistory,
+            cached: true,
+        });
+    }
     const statusDocs = await UserQuizStatusModel.find({
         userId,
         chapterId,
@@ -897,6 +972,16 @@ const quizhistory = asyncWrapper(async (req, res, next) => {
 
     // Use the most recent status document or aggregate status
     const latestStatusDoc = statusDocs[statusDocs.length - 1];
+    const historyData = {
+        attempts: attemptsWithDegree,
+        overallStatus: latestStatusDoc.status,
+        overallScore: latestStatusDoc.score,
+        totalAttempts,
+        bestScore,
+        averageScore,
+        passRate,
+    };
+    await CacheHelper.set(cacheKey, historyData, CacheKeys.TTL.ONE_HOUR);
 
     return res.status(200).json({
         success: true,
@@ -914,106 +999,154 @@ const quizhistory = asyncWrapper(async (req, res, next) => {
 });
 const getchapters = asyncWrapper(async (req, res, next) => {
     const user = req.user;
+    const userId = user._id;
     const { folderId } = req.params;
-    // Aggregate chapters with user quiz status for this user and chapter
-    const chaptersWithStatus = await ChapterModel.aggregate([
-        { $match: { folderId: new mongoose.Types.ObjectId(folderId) } },
-        {
-            $lookup: {
-                from: "userquizstatuses",
-                let: { chapterId: "$_id" },
-                pipeline: [
-                    {
-                        $match: {
-                            $expr: {
-                                $and: [
-                                    { $eq: ["$chapterId", "$$chapterId"] },
-                                    { $eq: ["$userId", new mongoose.Types.ObjectId(user._id)] },
-                                ],
+    if(!folderId){
+        return next(ErrorHandler.createError("folderId is required", 400));
+    }
+    const { data: chapters, cached } = await CacheHelper.getOrSet(
+        CacheKeys.getChaptersListKey(folderId, userId),
+        async () => {
+            const chaptersWithStatus = await ChapterModel.aggregate([
+                { $match: { folderId: new mongoose.Types.ObjectId(folderId) } },
+                {
+                    $lookup: {
+                        from: "userquizstatuses",
+                        let: { chapterId: "$_id" },
+                        pipeline: [
+                            {
+                                $match: {
+                                    $expr: {
+                                        $and: [
+                                            { $eq: ["$chapterId", "$$chapterId"] },
+                                            { $eq: ["$userId", new mongoose.Types.ObjectId(userId)] },
+                                        ],
+                                    },
+                                },
                             },
+                            { $sort: { updatedAt: -1 } },
+                            { $limit: 1 },
+                        ],
+                        as: "userQuizStatus",
+                    },
+                },
+                {
+                    $addFields: {
+                        userQuizStatusObj: { $arrayElemAt: ["$userQuizStatus", 0] },
+                    },
+                },
+                {
+                    $project: {
+                        _id: 1,
+                        title: 1,
+                        description: 1,
+                        createdAt: 1,
+                        createdBy: 1,
+                        summaryId: 1,
+                        quizStatus: { $ifNull: ["$userQuizStatusObj.status", "NotTaken"] },
+                        quizScore: { $ifNull: ["$userQuizStatusObj.score", 0] },
+                        quizCompleted: {
+                            $cond: [{ $ifNull: ["$userQuizStatusObj", false] }, true, false],
                         },
                     },
-                    { $sort: { updatedAt: -1 } },
-                    { $limit: 1 },
-                ],
-                as: "userQuizStatus",
-            },
-        },
-        {
-            $addFields: {
-                userQuizStatusObj: { $arrayElemAt: ["$userQuizStatus", 0] },
-            },
-        },
-        {
-            $project: {
-                _id: 1,
-                title: 1,
-                description: 1,
-                createdAt: 1,
-                createdBy: 1,
-                summaryId: 1,
-                // Extract just the status from the userQuizStatus object or return "NotTaken" if not found
-                quizStatus: { $ifNull: ["$userQuizStatusObj.status", "NotTaken"] },
-                quizScore: { $ifNull: ["$userQuizStatusObj.score", 0] },
-                quizCompleted: {
-                    $cond: [{ $ifNull: ["$userQuizStatusObj", false] }, true, false],
                 },
-                // We don't include content, contentType, or quizStatuses
-            },
+            ]);
+
+            return chaptersWithStatus;
         },
-    ]);
+        CacheKeys.TTL.SIX_HOURS
+    );
+
     res.status(200).json({
         success: true,
         message: "Chapters retrieved successfully",
-        chapters: chaptersWithStatus,
+        chapters,
+        cached,
     });
 });
 const getchaptercontent = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.params;
     const chapter = await ChapterModel.findById(chapterId);
     if (!chapter) return next(ErrorHandler.createError("Chapter not found", 404));
+    const cachedContent = await CacheHelper.getCachedChapterContent(chapterId);
+    
+    if (cachedContent) {
+        return res.status(200).json({
+            success: true,
+            message: "Chapter content retrieved from cache",
+            content: cachedContent,
+            contentType: chapter.contentType,
+            cached: true,
+        });
+    }
+
+    // Cache the content
+    await CacheHelper.cacheChapterContent(
+        chapterId,
+        chapter.content,
+        CacheKeys.TTL.ONE_WEEK
+    );
+
     res.status(200).json({
         success: true,
-        message: "Chapter retrieved successfully",
+        message: "Chapter content retrieved successfully",
         content: chapter.content,
         contentType: chapter.contentType,
+        cached: false,
     });
 });
 const deletefolder = asyncWrapper(async (req, res, next) => {
     const { folderId } = req.params;
     const user = req.user;
+
     const folder = await FolderModel.findById(folderId);
-    if (folder == null) {
-        return next(ErrorHandler.createError("Folder not found", 404, []));
+    if (!folder) {
+        return next(ErrorHandler.createError("Folder not found", 404));
     }
-    if (folder.ownerId != user._id) {
-        return next(
-            ErrorHandler.createError("Folder not have access to delete it ", 404, [])
-        );
+
+    if (folder.ownerId.toString() !== user._id.toString()) {
+        return next(ErrorHandler.createError("Access denied", 403));
     }
+
+    // Get shared users before deletion
+    let sharedWithUsers: any = [];
+    if (Array.isArray(folder.sharedWith) && folder.sharedWith.length > 0) {
+        sharedWithUsers = await UserModel.find({
+            _id: { $in: folder.sharedWith },
+        })
+            .select("_id username email profilePicture")
+            .lean();
+    }
+
+    // ✅ Invalidate all folder-related caches
+    await CacheHelper.invalidateFolder(folder);
+
     await folder.deleteOne();
-    // SSE: Notify owner and shared users
+
+    // SSE notifications
     try {
         const { sendEventToUser } = require("./sseController");
+        
         sendEventToUser(folder.ownerId.toString(), {
             type: "folder_deleted",
-            folderId: folder._id,
+            folder: { ...folder.toObject(), sharedWith: sharedWithUsers },
         });
-        // Notify shared users
+
         if (Array.isArray(folder.sharedWith)) {
             folder.sharedWith.forEach((uid: any) => {
                 sendEventToUser(uid.toString(), {
                     type: "folder_shared_deleted",
-                    folderId: folder._id,
+                    folder: { ...folder.toObject(), sharedWith: sharedWithUsers },
                 });
             });
         }
     } catch (err) {
-        // Ignore SSE errors
+        console.error("[SSE] Error sending folder_deleted event:", err);
     }
+
     return res.status(200).json({
         success: true,
-        message: "Folder deleted  successfully",
+        message: "Folder deleted successfully",
     });
 });
 const deletechapter = asyncWrapper(async (req, res, next) => {
@@ -1025,6 +1158,11 @@ const deletechapter = asyncWrapper(async (req, res, next) => {
     }
     const folderId = chapter.folderId;
     const folder = await FolderModel.findById(folderId);
+    if(!folder){
+        
+            return next(ErrorHandler.createError("Folder not found", 404));
+
+    }
     if (folder!.ownerId != userId) {
         return next(
             ErrorHandler.createError(
@@ -1035,6 +1173,15 @@ const deletechapter = asyncWrapper(async (req, res, next) => {
         );
     }
     await chapter?.deleteOne();
+    const affectedUsers = [
+        folder.ownerId.toString(),
+        ...(folder.sharedWith || []).map((id: any) => id.toString()),
+    ];
+
+    // ✅ Invalidate all chapter-related caches
+    await CacheHelper.invalidateChapter(chapterId, folder.id, affectedUsers);
+
+    await chapter.deleteOne();
     return res.status(200).json({
         success: true,
         message: "chapter deleted  successfully",

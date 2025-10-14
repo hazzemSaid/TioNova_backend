@@ -179,4 +179,7 @@ export class CacheKeys {
                 return this.TTL.ONE_HOUR;      // Default safe value
         }
     }
+    static getMindmapKey(chapterId: string): string {
+        return `mindmap:chapter:${chapterId}`;
+    }
 }

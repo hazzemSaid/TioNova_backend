@@ -18,7 +18,12 @@ PdfRouter.patch("/updatefolder", verifyToken, PdfController.updatefolder);
 PdfRouter.get("/getfolders", verifyToken, PdfController.getfolders);
 PdfRouter.get("/getchapters/:folderId", verifyToken, PdfController.getchapters);
 PdfRouter.get("/getchaptercontent/:chapterId", verifyToken, PdfController.getchaptercontent);
-PdfRouter.post("/getAvailableUsersForShare",verifyToken,PdfController.getAvailableUsersForShare);
-PdfRouter.post("/setuserssharewith",verifyToken,PdfController.setuserssharewith);
-PdfRouter.delete("/deletefolder/:folderId",verifyToken,PdfController.deletefolder).delete("/deletechapter/:chapterId",verifyToken,PdfController.deletechapter)
+PdfRouter.post("/getAvailableUsersForShare", verifyToken, PdfController.getAvailableUsersForShare);
+PdfRouter.post("/setuserssharewith", verifyToken, PdfController.setuserssharewith);
+PdfRouter.delete("/deletefolder/:folderId", verifyToken, PdfController.deletefolder).delete("/deletechapter/:chapterId", verifyToken, PdfController.deletechapter)
+PdfRouter.post("/createMindmap", verifyToken, PdfController.createMindmap);
+PdfRouter.post("/createMindmap", verifyToken, PdfController.createMindmap);
+PdfRouter.patch("/saveMindmap", verifyToken, PdfController.saveMindmap);
+PdfRouter.post("/generateText", verifyToken, PdfController.generatecontent);
+
 export default PdfRouter;

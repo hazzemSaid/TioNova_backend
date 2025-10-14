@@ -16,11 +16,7 @@ app.use(express.json());
 app.use(express.static("static"));
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://localhost:5173",
-      process.env.FRONTEND_URL || "https://tionova-frontend.onrender.com"
-    ].filter(Boolean),
+    origin: "*",
     credentials: true,
   })
 );

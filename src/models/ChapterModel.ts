@@ -48,6 +48,11 @@ const ChapterModel = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Summary',
     required: false
+},
+mindmapId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Mindmap',
+    required: false
 }
 });
 

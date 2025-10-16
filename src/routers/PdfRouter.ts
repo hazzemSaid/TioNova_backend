@@ -26,4 +26,11 @@ PdfRouter.post("/createMindmap", verifyToken, PdfController.createMindmap);
 PdfRouter.patch("/saveMindmap", verifyToken, PdfController.saveMindmap);
 PdfRouter.post("/generateText", verifyToken, PdfController.generatecontent);
 
+// Note operations
+PdfRouter.get("/notes/chapter/:chapterId", verifyToken, PdfController.getNotesByChapterId);
+PdfRouter.post("/notes/text", verifyToken, PdfController.addTextNote);
+PdfRouter.post("/notes/image", verifyToken, upload.single("file"), PdfController.addImageNote);
+PdfRouter.post("/notes/voice", verifyToken, upload.single("file"), PdfController.addVoiceNote);
+PdfRouter.delete("/notes/:noteId", verifyToken, PdfController.deleteNote);
+
 export default PdfRouter;

@@ -16,4 +16,35 @@ const CLOUDINARY_API_SECRET = process.env.APIsecret;
 
 
 })();
+
+/**
+ * Upload file buffer to Cloudinary
+ * @param buffer - File buffer from multer
+ * @param folder - Folder path in Cloudinary
+ * @param resourceType - 'image', 'video', 'raw', 'auto'
+ * @returns Upload result with secure_url, public_id, etc.
+ */
+export const uploadToCloudinary = (
+	buffer: Buffer,
+	folder: string = 'notes',
+	resourceType: 'image' | 'video' | 'raw' | 'auto' = 'auto'
+): Promise<any> => {
+	return new Promise((resolve, reject) => {
+		const uploadStream = cloudinary.uploader.upload_stream(
+			{
+				folder: folder,
+				resource_type: resourceType,
+			},
+			(error, result) => {
+				if (error) {
+					reject(error);
+				} else {
+					resolve(result);
+				}
+			}
+		);
+		uploadStream.end(buffer);
+	});
+};
+
 export default cloudinary;

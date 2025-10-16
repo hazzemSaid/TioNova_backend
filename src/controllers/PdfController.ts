@@ -1,10 +1,11 @@
 // PdfController - Consolidated exports from refactored controllers
-import FolderController from "./FolderController";
 import ChapterController from "./ChapterController";
-import SummaryController from "./SummaryController";
-import QuizController from "./QuizController";
+import FolderController from "./FolderController";
 import MindmapController from "./MindmapController";
+import NoteController from "./NoteController";
+import QuizController from "./QuizController";
 import ShareController from "./ShareController";
+import SummaryController from "./SummaryController";
 
 // Re-export all controllers as a single object for backward compatibility
 const PdfController = {
@@ -25,6 +26,9 @@ const PdfController = {
     
     // Share operations
     ...ShareController,
+    
+    // Note operations
+    ...NoteController,
 };
 
 export default PdfController;

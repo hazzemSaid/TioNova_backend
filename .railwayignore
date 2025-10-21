@@ -6,8 +6,11 @@ node_modules/
 .env
 *.log
 
-# We only need worker files
+# Force Railway to use nixpacks instead of Dockerfile
 Dockerfile
+Dockerfile.worker
+
+# Don't need these for worker
 start.sh
 vercel.json
 render.yaml

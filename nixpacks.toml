@@ -2,10 +2,10 @@
 nixPkgs = ["nodejs-18_x"]
 
 [phases.install]
-cmds = ["npm install --production=false"]
+cmds = ["npm install"]
 
 [phases.build]
-cmds = []
+# Skip build - we run TypeScript directly with ts-node
 
 [start]
 cmd = "npx ts-node src/workers/chapterWorker.ts"

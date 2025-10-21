@@ -67,89 +67,89 @@ export async function handleExtractContent(job: any) {
     await job.updateProgress(10);
     console.log(`[Job ${job.id}] Progress: 10% - Starting Gemini API call`);
 
-    const requestBody = {
-      contents: [
-        {
-          parts: [
-            {
-              text: `You are an expert document cleaning and text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and complete text version of its content.
+  const requestBody = {
+    contents: [
+      {
+        parts: [
+          {
+            text: `You are an expert document cleaning and text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and complete text version of its content.
 
 **Instructions:**
 1. **Extract all text.** Capture all readable text from the document, including headings, paragraphs, and lists.
 2. **Remove noise and artifacts.** Eliminate OCR errors, visual artifacts, duplicated phrases, page numbers, headers, and footers.
 3. **Structure and normalize content.**
-    * Reconstruct broken sentences and paragraphs.
-    * Maintain the original hierarchy of chapters, sections, and sub-sections.
-    * Preserve bullet points, numbered lists, and code blocks.
+  * Reconstruct broken sentences and paragraphs.
+  * Maintain the original hierarchy of chapters, sections, and sub-sections.
+  * Preserve bullet points, numbered lists, and code blocks.
 4. **Final output:** Provide ONLY the cleaned, raw text content of the document. Do not summarize, interpret, or add any commentary.
 
 **Output format:** Return the full, uninterpreted text in a single, well-formatted string.`,
+          },
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: fileBuffer,
             },
-            {
-              inlineData: {
-                mimeType: mimeType,
-                data: fileBuffer,
-              },
-            },
-          ],
-        },
-      ],
-      generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
-    };
-
-    const response = await retryGeminiApiCall(requestBody);
-    const data = await response.json();
-    
-    console.log(`[Job ${job.id}] Gemini response received`);
-    console.log(`[Job ${job.id}] Response structure:`, {
-      hasContent: !!data?.candidates?.[0]?.content,
-      hasParts: !!data?.candidates?.[0]?.content?.parts,
-      hasText: !!data?.candidates?.[0]?.content?.parts?.[0]?.text,
-    });
-
-    const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!extractedText) {
-      throw new Error("No text extracted from Gemini API response");
-    }
-
-    await job.updateProgress(40);
-    console.log(`[Job ${job.id}] Progress: 40% - Text extracted (${extractedText.length} chars)`);
-
-    // Update chapter in database
-    const updateResult = await ChapterModel.findByIdAndUpdate(
-      chapterId,
-      {
-        overcontent: extractedText,
-        updatedBy: userId,
+          },
+        ],
       },
-      { new: true }
-    );
+    ],
+    generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
+  };
 
-    if (!updateResult) {
-      throw new Error(`Chapter not found for update: ${chapterId}`);
-    }
+  const response = await retryGeminiApiCall(requestBody);
+  const data = await response.json();
+  
+  console.log(`[Job ${job.id}] Gemini response received`);
+  console.log(`[Job ${job.id}] Response structure:`, {
+    hasContent: !!data?.candidates?.[0]?.content,
+    hasParts: !!data?.candidates?.[0]?.content?.parts,
+    hasText: !!data?.candidates?.[0]?.content?.parts?.[0]?.text,
+  });
 
-    console.log(`[Job ${job.id}] Progress: 50% - Chapter updated in DB`);
-    await job.updateProgress(50);
+  const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    // Cache the extracted content
-    const overcontentKey = CacheKeys.getChapterOverContentKey(chapterId);
-    await CacheHelper.set(
-      overcontentKey,
-      extractedText,
-      CacheKeys.TTL.ONE_WEEK
-    );
+  if (!extractedText) {
+    throw new Error("No text extracted from Gemini API response");
+  }
 
-    console.log(`[Job ${job.id}] Progress: 75% - Content cached`);
-    await job.updateProgress(75);
+  await job.updateProgress(40);
+  console.log(`[Job ${job.id}] Progress: 40% - Text extracted (${extractedText.length} chars)`);
 
-    // Invalidate chapters list cache
-    const affectedUsers = [ownerId, ...sharedWith];
-    await CacheHelper.invalidateChaptersList(folderId, affectedUsers);
+  // Update chapter in database
+  const updateResult = await ChapterModel.findByIdAndUpdate(
+    chapterId,
+    {
+      overcontent: extractedText,
+      updatedBy: userId,
+    },
+    { new: true }
+  );
 
-    await job.updateProgress(100);
-    console.log(`[Job ${job.id}] ✅ COMPLETED - Content extraction finished`);
+  if (!updateResult) {
+    throw new Error(`Chapter not found for update: ${chapterId}`);
+  }
+
+  console.log(`[Job ${job.id}] Progress: 50% - Chapter updated in DB`);
+  await job.updateProgress(50);
+
+  // Cache the extracted content
+  const overcontentKey = CacheKeys.getChapterOverContentKey(chapterId);
+  await CacheHelper.set(
+    overcontentKey,
+    extractedText,
+    CacheKeys.TTL.ONE_WEEK
+  );
+
+  console.log(`[Job ${job.id}] Progress: 75% - Content cached`);
+  await job.updateProgress(75);
+
+  // Invalidate chapters list cache
+  const affectedUsers = [ownerId, ...sharedWith];
+  await CacheHelper.invalidateChaptersList(folderId, affectedUsers);
+
+  await job.updateProgress(100);
+  console.log(`[Job ${job.id}] ✅ COMPLETED - Content extraction finished`);
 
     return {
       success: true,

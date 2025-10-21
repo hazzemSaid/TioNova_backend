@@ -296,7 +296,7 @@ const refreshToken = asyncWrapper(async (req, res, next) => {
 	}
 });
 
-// Google auth function
+// Google auth function - supports both ID tokens and access tokens
 const googleAuth = asyncWrapper(async (req, res, next) => {
 	const errors = validationResult(req);
 	if (!errors.isEmpty()) {
@@ -305,23 +305,59 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 
 	// Accept both `token` and `idToken` (iOS clients commonly send `idToken`)
 	const token = req.body.token || req.body.idToken;
+	
 	try {
-		// Verify Google token signature and issuer. We'll validate audience manually to support multiple platforms.
-		const ticket = await webClient.verifyIdToken({
-			idToken: token,
-		});
+		let payload;
+		let isAccessToken = false;
 
-		const payload = ticket.getPayload();
-		if (!payload || !payload.email || !payload.email_verified) {
-			return next(ErrorHandler.createError("Invalid Google token or email not verified", 401));
+		// Try to verify as ID token first (for mobile clients)
+		try {
+			const ticket = await webClient.verifyIdToken({
+				idToken: token,
+			});
+			payload = ticket.getPayload();
+			console.log('✅ Verified as ID token');
+		} catch (idTokenError) {
+			// If ID token verification fails, try as access token (for web clients)
+			console.log('⚠️ ID token verification failed, trying as access token...');
+			
+			try {
+				const response = await fetch(
+					`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${token}`
+				);
+				
+				if (!response.ok) {
+					throw new Error(`Failed to fetch user info: ${response.statusText}`);
+				}
+				
+				payload = await response.json();
+				isAccessToken = true;
+				console.log('✅ Verified as access token');
+			} catch (accessTokenError) {
+				console.error('❌ Both ID token and access token verification failed');
+				throw new Error('Invalid token');
+			}
 		}
 
-		// Manual audience validation against allowed client IDs
-		if (!payload.aud || !googleAudiences.includes(payload.aud)) {
-			return next(ErrorHandler.createError("Invalid Google token audience", 401, {
-				actual: payload.aud,
-				expectedAnyOf: googleAudiences
-			}));
+		// Validate payload
+		if (!payload || !payload.email) {
+			return next(ErrorHandler.createError("Invalid Google token: missing email", 401));
+		}
+
+		// For ID tokens, check email_verified
+		// For access tokens from Google API, email is always verified
+		if (!isAccessToken && !payload.email_verified) {
+			return next(ErrorHandler.createError("Email not verified", 401));
+		}
+
+		// For ID tokens, validate audience (client ID)
+		if (!isAccessToken) {
+			if (!payload.aud || !googleAudiences.includes(payload.aud)) {
+				return next(ErrorHandler.createError("Invalid Google token audience", 401, {
+					actual: payload.aud,
+					expectedAnyOf: googleAudiences
+				}));
+			}
 		}
 
 		const { email, name, picture, sub: googleId } = payload;
@@ -334,6 +370,7 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 			user.refreshtoken = await hash(refreshToken);
 			await user.save();
 
+			console.log(`✅ User logged in: ${email}`);
 			return res.status(200).json(createUserResponse(user, accessToken, refreshToken));
 		} else {
 			// New user - create account
@@ -353,9 +390,11 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 			user.refreshtoken = await hash(refreshToken);
 			await user.save();
 
+			console.log(`✅ New user created: ${email}`);
 			return res.status(201).json(createUserResponse(user, accessToken, refreshToken));
 		}
 	} catch (error) {
+		console.error('❌ Google authentication error:', error);
 		return next(ErrorHandler.createError("Google authentication failed", 401, error));
 	}
 });

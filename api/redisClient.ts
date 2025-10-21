@@ -1,23 +1,41 @@
 import { Redis } from "@upstash/redis";
 
-export const redisClient = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
+let redisClient: Redis | null = null;
+
+// Lazy load Redis client only when needed
+function getRedisClient(): Redis {
+  if (!redisClient) {
+    if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+      throw new Error(
+        "UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are not defined. " +
+        "Required for caching operations."
+      );
+    }
+    
+    redisClient = new Redis({
+      url: process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    });
+  }
+  return redisClient;
+}
 
 // Example functions
 export async function setCache(key: string, value: string, ttl?: number) {
+  const client = getRedisClient();
   if (ttl !== undefined) {
-    await redisClient.set(key, value, { ex: ttl });
+    await client.set(key, value, { ex: ttl });
   } else {
-    await redisClient.set(key, value);
+    await client.set(key, value);
   }
 }
 
 export async function getCache(key: string): Promise<string | null> {
-  return await redisClient.get(key);
+  const client = getRedisClient();
+  return await client.get(key);
 }
 
 export async function delCache(key: string) {
-  await redisClient.del(key);
+  const client = getRedisClient();
+  await client.del(key);
 }

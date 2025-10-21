@@ -38,6 +38,36 @@ services:
         sync: false
       - key: TESSERACT_CMD
         value: /usr/bin/tesseract
+      - key: REDIS_URL
+        sync: false
+      - key: API_KEY_GEMINI
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+
+  # Background Worker Service for BullMQ
+  - type: worker
+    name: tionova-worker
+    env: node
+    buildCommand: npm install
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_URL
+        sync: false
+      - key: MONGO_URI
+        fromDatabase:
+          name: tionova-mongodb
+          property: connectionString
+      - key: API_KEY_GEMINI
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
 
 databases:
   - name: tionova-mongodb

@@ -2,63 +2,27 @@ import mongoose from "mongoose";
 import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
 import FolderModel from "../models/FolderModel";
+import { chapterQueue } from "../queues/chapterQueue";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
-import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
 
 const createchapter = asyncWrapper(async (req, res, next) => {
     const { folderId, title, description, category } = req.body;
     const file = req.file;
-    
+
     const folder = await FolderModel.findById(folderId);
     if (!folder) {
         return next(ErrorHandler.createError("Folder not found", 404));
     }
-    
+
     if (!file) {
         return next(ErrorHandler.createError("PDF file is required", 400));
     }
-    
+
     if (file.mimetype !== "application/pdf") {
         return next(ErrorHandler.createError("PDF file is required", 400));
     }
-
-    // Extract and clean content from PDF using Gemini
-    const requestBody = {
-        contents: [
-            {
-                parts: [
-                    {
-                        text: `
-You are an expert document cleaning and text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and complete text version of its content.
-
-**Instructions:**
-1. **Extract all text.** Capture all readable text from the document, including headings, paragraphs, and lists.
-2. **Remove noise and artifacts.** Eliminate OCR errors, visual artifacts, duplicated phrases, page numbers, headers, and footers.
-3. **Structure and normalize content.**
-    * Reconstruct broken sentences and paragraphs.
-    * Maintain the original hierarchy of chapters, sections, and sub-sections.
-    * Preserve bullet points, numbered lists, and code blocks.
-4. **Final output:** Provide ONLY the cleaned, raw text content of the document. Do not summarize, interpret, or add any commentary. The final output must be ready for further AI analysis, such as quiz generation.
-
-**Output format:** Return the full, uninterpreted text in a single, well-formatted string.
-`,
-                    },
-                    {
-                        inlineData: {
-                            mimeType: getMimeType(file.originalname),
-                            data: file.buffer.toString("base64"),
-                        },
-                    },
-                ],
-            },
-        ],
-        generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
-    };
-
-    const response = await retryGeminiApiCall(requestBody);
-    const data = await response.json();
 
     const chapter = await ChapterModel.create({
         content: file.buffer,
@@ -66,33 +30,47 @@ You are an expert document cleaning and text extraction assistant. Your task is 
         createdBy: req.user._id,
         updatedBy: req.user._id,
         folderId,
-        overcontent: data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null,
+        overcontent: null,
         title,
         description,
         category,
     });
 
-    // Cache the overcontent
-    if (data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-        const overcontentKey = CacheKeys.getChapterOverContentKey(chapter._id.toString());
-        await CacheHelper.set(
-            overcontentKey,
-            data.candidates[0].content.parts[0].text,
-            CacheKeys.TTL.ONE_WEEK
+    try {
+        const job = await chapterQueue.add(
+            "extractContent",
+            {
+                chapterId: chapter._id.toString(),
+                folderId: folderId.toString(),
+                userId: req.user._id.toString(),
+                fileName: file.originalname,
+                fileBuffer: file.buffer.toString("base64"),
+                mimeType: file.mimetype,
+                ownerId: folder.ownerId.toString(),
+                sharedWith: (folder.sharedWith || []).map((id: any) => id.toString()),
+            },
+            {
+                attempts: 3,
+                backoff: {
+                    type: "exponential",
+                    delay: 2000,
+                },
+                removeOnComplete: true,
+                removeOnFail: false,
+            }
         );
-    }
 
-    // ✅ Invalidate chapters list for all affected users
-    const affectedUsers = [
-        folder.ownerId.toString(),
-        ...(folder.sharedWith || []).map((id: any) => id.toString()),
-    ];
-    
-    await CacheHelper.invalidateChaptersList(folderId, affectedUsers);
+        console.log(`✅ Job queued successfully - Job ID: ${job.id}, Chapter ID: ${chapter._id}`);
+    } catch (error) {
+        console.error("❌ Failed to queue job:", error);
+        return next(ErrorHandler.createError("Failed to queue content extraction", 500));
+    }
 
     res.status(200).json({
         success: true,
-        message: "Chapter created successfully",
+        message: "Chapter created successfully. Content extraction in progress...",
+        chapterId: chapter._id,
+        jobStatus: "Processing",
     });
 });
 
@@ -100,7 +78,7 @@ const getchapters = asyncWrapper(async (req, res, next) => {
     const user = req.user;
     const userId = user._id;
     const { folderId } = req.params;
-    
+
     if (!folderId) {
         return next(ErrorHandler.createError("folderId is required", 400));
     }
@@ -170,13 +148,13 @@ const getchapters = asyncWrapper(async (req, res, next) => {
 const getchaptercontent = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.params;
     const chapter = await ChapterModel.findById(chapterId);
-    
+
     if (!chapter) {
         return next(ErrorHandler.createError("Chapter not found", 404));
     }
 
     const cachedContent = await CacheHelper.getCachedChapterContent(chapterId);
-    
+
     if (cachedContent) {
         return res.status(200).json({
             success: true,
@@ -206,7 +184,7 @@ const getchaptercontent = asyncWrapper(async (req, res, next) => {
 const deletechapter = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.params;
     const userId = req.user._id;
-    
+
     const chapter = await ChapterModel.findById(chapterId);
     if (!chapter) {
         return next(ErrorHandler.createError("Chapter not found", 404));
@@ -214,7 +192,7 @@ const deletechapter = asyncWrapper(async (req, res, next) => {
 
     const folderId = chapter.folderId;
     const folder = await FolderModel.findById(folderId);
-    
+
     if (!folder) {
         return next(ErrorHandler.createError("Folder not found", 404));
     }

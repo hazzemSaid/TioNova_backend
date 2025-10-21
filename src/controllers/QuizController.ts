@@ -1,8 +1,8 @@
 import mongoose from "mongoose";
 import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
-import QuizModel from "../models/QuizModel";
 import QuestionModel from "../models/QuestionModel";
+import QuizModel from "../models/QuizModel";
 import UserQuizStatusModel from "../models/UserQuizStatusModel";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
@@ -67,20 +67,33 @@ const createquiz = asyncWrapper(async (req, res, next) => {
             const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
 
             const mcqPrompt = `
-You are an AI assistant that creates multiple choice quizzes.
-Generate exactly ${needed} new questions from the provided content.
-Do NOT repeat any of the questions listed below.
+You are an AI assistant that creates multiple choice quizzes based on educational content.
 
-Existing questions:
+IMPORTANT INSTRUCTIONS:
+1. Read and analyze the provided chapter content carefully (PDF or text)
+2. Generate exactly ${needed} new questions ONLY from the information contained in this specific chapter
+3. Questions must be directly related to the topics, concepts, and information present in the chapter content
+4. Do NOT create generic questions or questions from outside knowledge
+5. Each question should test understanding of specific content from the chapter
+6. Do NOT repeat any of the questions listed below
+
+Existing questions to avoid:
 ${existingTexts}
 
-Format (JSON only):
+Requirements for each question:
+- Must be answerable using only information from the chapter
+- Should test key concepts, facts, or principles from the content
+- Include 4 distinct options (labeled a, b, c, d)
+- Only one option should be correct
+- Provide a clear explanation referencing the chapter content
+
+Output Format (JSON only, no additional text):
 [
   {
-    "question": "Your question text?",
+    "question": "Your question text based on chapter content?",
     "options": ["a) Option1", "b) Option2", "c) Option3", "d) Option4"],
     "answer": "a",
-    "explanation": "1–2 sentence explanation."
+    "explanation": "Brief explanation referencing the chapter content."
   }
 ]
 `;
@@ -92,6 +105,11 @@ Format (JSON only):
                 const mimeType = getMimeType("chapter.pdf", chapter.contentType);
                 contents[0].parts.push({ 
                     inlineData: { mimeType, data: base64File } 
+                });
+            } else {
+                // If overcontent exists, include it in the prompt
+                contents[0].parts.push({ 
+                    text: `\n\nChapter Content:\n${chapter.overcontent}` 
                 });
             }
 

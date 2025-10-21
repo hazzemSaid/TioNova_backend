@@ -1,0 +1,14 @@
+# Don't deploy these to Railway worker
+dist/
+uploads/
+node_modules/
+.git/
+.env
+*.log
+
+# We only need worker files
+Dockerfile
+start.sh
+vercel.json
+render.yaml
+build.js

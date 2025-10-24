@@ -1,0 +1,684 @@
+import { Response } from 'express';
+import mongoose, { isValidObjectId } from 'mongoose';
+import QRCode from 'qrcode';
+import { v4 as uuidv4 } from 'uuid';
+import ChallengeResultModel from '../models/ChallengeResultModel';
+import ChapterModel from '../models/ChapterModel';
+import QuestionModel from '../models/QuestionModel';
+import QuizModel from '../models/QuizModel';
+import { admin } from '../utils/firebase';
+import { getMimeType, retryGeminiApiCall } from '../utils/geminiApi';
+
+const db = admin.database();
+
+const getQuizQuestionsWithAnswers = async (quizId: string) => {
+	const quiz = await QuizModel.findById(quizId);
+	if (!quiz) throw new Error('Quiz not found');
+
+	const ids = quiz.questions.map((q: any) => new mongoose.Types.ObjectId(q));
+	const docs = await QuestionModel.find({ _id: { $in: ids } });
+
+	return docs.map((q) => ({
+		questionId: q._id.toString(),
+		question: q.question,
+		options: q.options,
+		answer: (q.answer || '').toString().trim().toLowerCase(),
+	}));
+};
+
+export const createLiveChallenge = async (req: any, res: Response) => {
+	try {
+		const ownerId = req.user._id?.toString();
+		const username = req.user.username || 'Owner';
+		const { chapterId } = req.body || {};
+		if (!ownerId) return res.status(401).json({ message: 'Unauthorized' });
+		if (!chapterId || !isValidObjectId(chapterId)) return res.status(400).json({ message: 'Valid chapterId required' });
+
+		let quiz = await QuizModel.findOne({ chapterId });
+		let targetQuizId: string;
+
+		if (!quiz) {
+			const chapter = await ChapterModel.findById(chapterId);
+			if (!chapter) return res.status(404).json({ message: 'Chapter not found' });
+			if (!chapter.overcontent && !Buffer.isBuffer(chapter.content)) {
+				return res.status(400).json({ message: 'Chapter content is required for quiz generation' });
+			}
+
+			const needed = 50;
+			const mcqPrompt = `
+You are an AI assistant that creates multiple choice quizzes based on educational content.
+
+IMPORTANT INSTRUCTIONS:
+1. Read and analyze the provided chapter content carefully (PDF or text)
+2. Generate exactly ${needed} new questions ONLY from the information contained in this specific chapter
+3. Questions must be directly related to the topics, concepts, and information present in the chapter content
+4. Do NOT create generic questions or questions from outside knowledge
+5. Each question should test understanding of specific content from the chapter
+6. Do NOT repeat any questions
+
+Requirements for each question:
+- Must be answerable using only information from the chapter
+- Should test key concepts, facts, or principles from the content
+- Include 4 distinct options (labeled a, b, c, d)
+- Only one option should be correct
+- Provide a clear explanation referencing the chapter content
+
+Output Format (JSON only, no additional text):
+[
+  {
+    "question": "Your question text based on chapter content?",
+    "options": ["a) Option1", "b) Option2", "c) Option3", "d) Option4"],
+    "answer": "a",
+    "explanation": "Brief explanation referencing the chapter content."
+  }
+]
+`;
+
+			const contents: any[] = [{ parts: [{ text: mcqPrompt }] }];
+			
+			if (!chapter.overcontent) {
+				if (!chapter.contentType || !chapter.content) {
+					return res.status(400).json({ message: 'Invalid chapter content for PDF' });
+				}
+				const base64File = chapter.content.toString("base64");
+				const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+				contents[0].parts.push({ 
+					inlineData: { mimeType, data: base64File } 
+				});
+			} else {
+				contents[0].parts.push({ 
+					text: `\n\nChapter Content:\n${chapter.overcontent}` 
+				});
+			}
+
+			const requestBody = {
+				contents,
+				generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+			};
+
+			let response;
+			try {
+				response = await retryGeminiApiCall(requestBody);
+			} catch (apiErr) {
+				console.error('Gemini API error:', apiErr);
+				return res.status(500).json({ message: 'Failed to generate quiz questions' });
+			}
+
+			const data = await response.json();
+			const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+			let newMcqs: any[] = [];
+			try {
+				newMcqs = JSON.parse(rawText);
+			} catch (parseErr) {
+				try {
+					const { jsonrepair } = require("jsonrepair");
+					newMcqs = JSON.parse(jsonrepair(rawText));
+				} catch (repairErr) {
+					const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
+					const matches = [...rawText.matchAll(pattern)];
+					
+					for (const m of matches) {
+						const options = m[2].split(",").map((s: any) => 
+							s.trim().replace(/^"|"$/g, "")
+						);
+						
+						if (options.length === 4) {
+							newMcqs.push({
+								question: m[1],
+								options,
+								answer: m[3],
+								explanation: m[4],
+							});
+						}
+					}
+				}
+			}
+
+			newMcqs = newMcqs.filter(
+				(mcq) =>
+					mcq.question &&
+					Array.isArray(mcq.options) &&
+					mcq.options.length === 4 &&
+					["a", "b", "c", "d"].includes(mcq.answer?.toLowerCase())
+			).slice(0, needed);
+
+			if (newMcqs.length < 10) { // Minimum threshold for a valid quiz
+				return res.status(500).json({ message: 'Insufficient questions generated' });
+			}
+
+			quiz = new QuizModel({
+				chapterId,
+				title: chapter.title || 'Generated Quiz',
+				questions: [],
+				createdBy: req.user._id,
+				updatedBy: req.user._id,
+			});
+			await quiz.save();
+
+			const questionDocs = await QuestionModel.insertMany(
+				newMcqs.map((mcq) => ({
+					quizId: quiz!._id,
+					question: mcq.question,
+					options: mcq.options,
+					answer: mcq.answer.toLowerCase(),
+					explanation: mcq.explanation,
+					createdBy: req.user._id,
+					updatedBy: req.user._id,
+				}))
+			);
+
+			quiz.questions = questionDocs.map((q) => q._id);
+			await quiz.save();
+		}
+
+		targetQuizId = quiz._id.toString();
+
+		const questions = await getQuizQuestionsWithAnswers(targetQuizId);
+
+		if (questions.length === 0) {
+			return res.status(400).json({ message: 'No questions available for this quiz' });
+		}
+
+		// Generate unique code with max attempts to avoid infinite loop
+		let challengeCode = '';
+		let attempts = 0;
+		const maxAttempts = 10;
+		do {
+			challengeCode = uuidv4().slice(0, 6).toUpperCase();
+			const exists = await db.ref(`liveChallenges/${challengeCode}/meta`).get();
+			if (!exists.exists()) break;
+			attempts++;
+			if (attempts >= maxAttempts) {
+				return res.status(500).json({ message: 'Failed to generate unique challenge code' });
+			}
+		} while (true);
+
+		const now = Date.now();
+		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		await baseRef.set({
+			meta: {
+				ownerId,
+				ownerUsername: username,
+				quizId: targetQuizId,
+				chapterId: chapterId || null,
+				status: 'waiting',
+				createdAt: now,
+				updatedAt: now,
+				challengeCode,
+			},
+			participants: {
+				[ownerId]: { username, score: 0, joinedAt: now, active: true },
+			},
+			questions, // includes answers for synchronized correctness
+			current: { index: -1 }, // -1 before start
+			answers: {}, // answers[index][userId] = { answer, isCorrect, ts }
+			rankings: [],
+		});
+
+		// Prepare QR (optional)
+		let qrDataUrl: string | null = null;
+		try {
+			qrDataUrl = await QRCode.toDataURL(challengeCode);
+		} catch (qrErr) {
+			console.error('QR generation error:', qrErr);
+			qrDataUrl = null;
+		}
+
+		// Prepare ChallengeResult skeleton (Mongo) for clean lifecycle tracking
+		const challengeResult = new ChallengeResultModel({
+			challengeCode,
+			owner: new mongoose.Types.ObjectId(ownerId),
+			quizId: new mongoose.Types.ObjectId(targetQuizId),
+			chapterId: chapterId ? new mongoose.Types.ObjectId(chapterId) : undefined,
+			status: 'waiting',
+			participants: [
+				{
+					userId: new mongoose.Types.ObjectId(ownerId),
+					username,
+					score: 0,
+					answers: [],
+				},
+			],
+			questions: questions.map((q) => ({
+				questionId: new mongoose.Types.ObjectId(q.questionId),
+				question: q.question,
+				options: q.options,
+				answer: q.answer,
+			})),
+			finalRankings: [],
+			createdAt: new Date(now),
+		});
+		await challengeResult.save();
+
+		return res.status(201).json({
+			success: true,
+			message: 'Live challenge created',
+			challengeCode,
+			qr: qrDataUrl,
+			questions: questions
+		});
+	} catch (err: any) {
+		console.error('createLiveChallenge error:', err);
+		return res.status(500).json({ message: 'Server error', details: err.message });
+	}
+};
+
+export const joinLiveChallenge = async (req: any, res: Response) => {
+	try {
+		const { challengeCode } = req.body || {};
+		const userId = req.user._id?.toString();
+		const username = req.user.username || 'Player';
+		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+
+		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		const metaSnap = await baseRef.child('meta').get();
+		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		const meta = metaSnap.val();
+		
+		// Allow rejoining if challenge is in-progress (for reconnection)
+		if (meta.status !== 'waiting' && meta.status !== 'in-progress') {
+			return res.status(400).json({ message: 'Challenge already completed' });
+		}
+
+		const now = Date.now();
+		const participantSnap = await baseRef.child(`participants/${userId}`).get();
+		
+		if (participantSnap.exists()) {
+			// User is reconnecting - mark them as active again
+			const existingData = participantSnap.val();
+			await baseRef.child(`participants/${userId}`).update({
+				active: true,
+				rejoinedAt: now,
+				username, // Update username in case it changed
+			});
+
+			return res.status(200).json({
+				success: true,
+				message: 'Reconnected to challenge',
+				challengeCode,
+				isReconnection: true,
+				currentScore: existingData.score || 0,
+			});
+		} else {
+			// New participant joining
+			if (meta.status !== 'waiting') {
+				return res.status(400).json({ message: 'Cannot join: Challenge already in progress' });
+			}
+
+			await baseRef.child(`participants/${userId}`).set({
+				username,
+				score: 0,
+				joinedAt: now,
+				active: true,
+			});
+
+			// Mirror in Mongo participants array (append if not existing)
+			await ChallengeResultModel.updateOne(
+				{ challengeCode },
+				{
+					$set: { status: 'waiting' },
+					$addToSet: {
+						participants: {
+							userId: new mongoose.Types.ObjectId(userId),
+							username,
+							score: 0,
+							answers: [],
+						},
+					},
+				}
+			);
+
+			return res.status(200).json({
+				success: true,
+				message: 'Joined challenge',
+				challengeCode,
+				isReconnection: false,
+			});
+		}
+	} catch (err: any) {
+		console.error('joinLiveChallenge error:', err);
+		return res.status(500).json({ message: 'Server error', details: err.message });
+	}
+};
+
+export const disconnectFromLiveChallenge = async (req: any, res: Response) => {
+	try {
+		const { challengeCode } = req.body || {};
+		const userId = req.user._id?.toString();
+		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+
+		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		const metaSnap = await baseRef.child('meta').get();
+		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+
+		const participantSnap = await baseRef.child(`participants/${userId}`).get();
+		if (!participantSnap.exists()) {
+			return res.status(404).json({ message: 'Participant not found in this challenge' });
+		}
+
+		// Mark participant as inactive (don't remove them)
+		const now = Date.now();
+		await baseRef.child(`participants/${userId}`).update({
+			active: false,
+			disconnectedAt: now,
+		});
+
+		return res.status(200).json({
+			success: true,
+			message: 'Marked as disconnected',
+			challengeCode,
+		});
+	} catch (err: any) {
+		console.error('disconnectFromLiveChallenge error:', err);
+		return res.status(500).json({ message: 'Server error', details: err.message });
+	}
+};
+
+export const startLiveChallenge = async (req: any, res: Response) => {
+	try {
+		const { challengeCode } = req.body || {};
+		const userId = req.user._id?.toString();
+		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+
+		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		const metaSnap = await baseRef.child('meta').get();
+		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		const meta = metaSnap.val();
+		if (meta.ownerId !== userId) return res.status(403).json({ message: 'Only owner can start' });
+		if (meta.status !== 'waiting') return res.status(400).json({ message: 'Already started or completed' });
+
+		const questionsSnap = await baseRef.child('questions').get();
+		if (!questionsSnap.exists() || !Array.isArray(questionsSnap.val()) || questionsSnap.val().length === 0) {
+			return res.status(400).json({ message: 'No questions available in challenge' });
+		}
+
+		const participantsSnap = await baseRef.child('participants').get();
+		const participants = participantsSnap.val() || {};
+		const activeParticipants = Object.keys(participants).filter(
+			(uid) => participants[uid]?.active !== false
+		);
+		const participantCount = activeParticipants.length;
+		if (participantCount < 2) { // At least one participant besides the owner
+			return res.status(400).json({ message: 'At least one additional active participant required to start' });
+		}
+
+		const now = Date.now();
+		await baseRef.update({
+			meta: { ...meta, status: 'in-progress', updatedAt: now, startedAt: now },
+			current: { index: 0, startTime: now }, // Start at first question with timer
+		});
+
+		// Mirror status in Mongo
+		await ChallengeResultModel.updateOne(
+			{ challengeCode },
+			{
+				$set: { status: 'in-progress', startedAt: new Date(now) },
+			}
+		);
+
+		return res.status(200).json({
+			success: true,
+			message: 'Challenge started',
+			totalQuestions: questionsSnap.val().length,
+			currentIndex: 0,
+		});
+	} catch (err: any) {
+		console.error('startLiveChallenge error:', err);
+		return res.status(500).json({ message: 'Server error', details: err.message });
+	}
+};
+
+export const submitLiveAnswer = async (req: any, res: Response) => {
+	try {
+		const { challengeCode, answer } = req.body || {};
+		const userId = req.user._id?.toString();
+		const username = req.user.username || 'Player';
+		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+		if (!answer) return res.status(400).json({ message: 'answer required' });
+
+		const normalized = (answer || '').toString().trim().toLowerCase();
+		if (!['a', 'b', 'c', 'd'].includes(normalized)) {
+			return res.status(400).json({ message: 'Invalid answer format. Must be a, b, c, or d.' });
+		}
+
+		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		const metaSnap = await baseRef.child('meta').get();
+		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		const meta = metaSnap.val();
+		if (meta.status !== 'in-progress') return res.status(400).json({ message: 'Challenge not in progress' });
+
+		const indexSnap = await baseRef.child('current/index').get();
+		const idx = indexSnap.val();
+		if (typeof idx !== 'number' || idx < 0) return res.status(400).json({ message: 'Invalid current index' });
+
+		// Check for duplicate submission
+		const existingAnswerSnap = await baseRef.child(`answers/${idx}/${userId}`).get();
+		if (existingAnswerSnap.exists()) {
+			return res.status(400).json({ message: 'Answer already submitted for this question' });
+		}
+
+		// Check if question has already advanced (late submission)
+		const currentSnap = await baseRef.child('current').get();
+		const current = currentSnap.val() || { index: 0 };
+		if (current.index !== idx) {
+			return res.status(400).json({ message: 'Too late: Question has already advanced' });
+		}
+
+		const qSnap = await baseRef.child(`questions/${idx}`).get();
+		if (!qSnap.exists()) return res.status(404).json({ message: 'Question not found' });
+		const q = qSnap.val();
+
+		const isCorrect = normalized === ((q.answer || '').toString().trim().toLowerCase());
+		const ts = Date.now();
+
+		// Write answer
+		await baseRef.child(`answers/${idx}/${userId}`).set({ answer: normalized, isCorrect, ts });
+
+		// Update participant score
+		const scoreRef = baseRef.child(`participants/${userId}/score`);
+		await scoreRef.transaction((curr) => {
+			const s = typeof curr === 'number' ? curr : 0;
+			return isCorrect ? s + 1 : s;
+		});
+
+		// Recompute rankings
+		const pSnap = await baseRef.child('participants').get();
+		const participants = pSnap.val() || {};
+		const rankings = Object.keys(participants)
+			.map((uid) => ({ userId: uid, score: participants[uid]?.score || 0 }))
+			.sort((a, b) => b.score - a.score);
+		await baseRef.child('rankings').set(rankings);
+
+		// Mirror answer in Mongo
+		const qIdSnap = await baseRef.child(`questions/${idx}/questionId`).get();
+		const questionIdStr = qIdSnap.val() as string;
+
+		await ChallengeResultModel.updateOne(
+			{ challengeCode, 'participants.userId': new mongoose.Types.ObjectId(userId) },
+			{
+				$push: {
+					'participants.$.answers': {
+						questionId: new mongoose.Types.ObjectId(questionIdStr),
+						selectedOption: normalized,
+						isCorrect,
+						answeredAt: new Date(ts),
+					},
+				},
+				$set: {
+					'participants.$.username': username,
+				},
+			}
+		);
+
+		// Check if all participants (including owner) have answered OR timer expired; then auto-advance if needed
+		const pSnapAfter = await baseRef.child('participants').get();
+		const participantsAfter = pSnapAfter.val() || {};
+		const activeParticipantIdsAfter = Object.keys(participantsAfter).filter(
+			(id) => participantsAfter[id]?.active !== false
+		); // Only consider active participants
+		const activeParticipantCountAfter = activeParticipantIdsAfter.length;
+
+		const answersSnapAfter = await baseRef.child(`answers/${idx}`).get();
+		const answeredIdsAfter = answersSnapAfter.exists() ? Object.keys(answersSnapAfter.val()) : [];
+
+		const allAnsweredAfter = activeParticipantCountAfter > 0 && activeParticipantIdsAfter.every((id) => answeredIdsAfter.includes(id));
+
+		// Timer check (30 seconds per question) - consistent with advanceLiveChallenge
+		const QUESTION_DURATION = 30000; // 30 seconds
+		const timeExpiredAfter = (Date.now() - (current.startTime || 0)) >= QUESTION_DURATION;
+
+		if (allAnsweredAfter || timeExpiredAfter) {
+			// Auto-advance to next question since all participants have answered
+			const questionsSnap = await baseRef.child('questions').get();
+			const questions = questionsSnap.val() || [];
+			const total = questions.length;
+
+			if (idx + 1 < total) {
+				const advanceTime = Date.now();
+				await baseRef.child('current').set({ index: idx + 1, startTime: advanceTime });
+				await baseRef.child('meta/updatedAt').set(advanceTime);
+			} else {
+				// Challenge completed
+				const now = Date.now();
+				await baseRef.update({
+					meta: { ...meta, status: 'completed', updatedAt: now, completedAt: now },
+				});
+
+				// Persist final rankings in Mongo
+				const rankingsSnap = await baseRef.child('rankings').get();
+				const rankings = (rankingsSnap.val() || []) as Array<{ userId: string; score: number }>;
+				const finalRankings = rankings.map((r, i) => ({
+					userId: new mongoose.Types.ObjectId(r.userId),
+					score: r.score,
+					rank: i + 1,
+				}));
+
+				await ChallengeResultModel.updateOne(
+					{ challengeCode },
+					{
+						$set: {
+							status: 'completed',
+							completedAt: new Date(now),
+							finalRankings,
+						},
+					}
+				);
+			}
+		}
+
+		return res.status(200).json({
+			success: true,
+			message: 'Answer recorded',
+			isCorrect,
+			currentIndex: idx,
+			rankings,
+		});
+	} catch (err: any) {
+		console.error('submitLiveAnswer error:', err);
+		return res.status(500).json({ message: 'Server error', details: err.message });
+	}
+};
+
+export const advanceLiveChallenge = async (req: any, res: Response) => {
+	try {
+		const { challengeCode, force } = req.body || {};
+		const userId = req.user._id?.toString();
+		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+
+		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		const metaSnap = await baseRef.child('meta').get();
+		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		const meta = metaSnap.val();
+		if (meta.status !== 'in-progress') return res.status(400).json({ message: 'Challenge not in progress' });
+
+		const currentSnap = await baseRef.child('current').get();
+		const current = currentSnap.val() || { index: 0, startTime: 0 };
+		const idx = current.index || 0;
+		const startTime = current.startTime || 0;
+
+		const questionsSnap = await baseRef.child('questions').get();
+		const questions = questionsSnap.val() || [];
+		const total = questions.length;
+		if (total === 0) return res.status(400).json({ message: 'No questions in challenge' });
+
+		// Check participants and answers
+		const pSnap = await baseRef.child('participants').get();
+		const participants = pSnap.val() || {};
+		// Include only active participants for the "all answered" condition
+		const activeParticipantIds = Object.keys(participants).filter(
+			(id) => participants[id]?.active !== false
+		);
+		const activeParticipantCount = activeParticipantIds.length;
+
+		const answersSnap = await baseRef.child(`answers/${idx}`).get();
+		const answeredIds = answersSnap.exists() ? Object.keys(answersSnap.val()) : [];
+
+		const allAnswered = activeParticipantCount > 0 && activeParticipantIds.every((id) => answeredIds.includes(id));
+
+		// Timer check (30 seconds per question)
+		const QUESTION_DURATION = 30000; // 30 seconds
+		const now = Date.now();
+		const timeExpired = (now - startTime) >= QUESTION_DURATION;
+
+		// Check if advancement is allowed ONLY when all participants (including owner) answered OR time expired
+		const canAdvance = allAnswered || timeExpired;
+		if (!canAdvance) {
+			return res.status(403).json({
+				success: false,
+				message: 'Waiting for all active participants to answer or timer to expire',
+				currentIndex: idx,
+				totalQuestions: total,
+				answeredCount: answeredIds.length,
+				activeParticipantCount,
+				timeRemaining: Math.max(0, QUESTION_DURATION - (now - startTime)),
+			});
+		}
+
+		if (idx + 1 < total) {
+			const advanceTime = Date.now();
+			await baseRef.child('current').set({ index: idx + 1, startTime: advanceTime });
+			await baseRef.child('meta/updatedAt').set(advanceTime);
+			return res.status(200).json({
+				success: true,
+				message: 'Advanced to next question',
+				currentIndex: idx + 1,
+				totalQuestions: total,
+			});
+		} else {
+			const now = Date.now();
+			await baseRef.update({
+				meta: { ...meta, status: 'completed', updatedAt: now, completedAt: now },
+			});
+
+			// Persist final rankings and mark completion in Mongo
+			const rankingsSnap = await baseRef.child('rankings').get();
+			const rankings = (rankingsSnap.val() || []) as Array<{ userId: string; score: number }>;
+			const finalRankings = rankings.map((r, i) => ({
+				userId: new mongoose.Types.ObjectId(r.userId),
+				score: r.score,
+				rank: i + 1,
+			}));
+
+			await ChallengeResultModel.updateOne(
+				{ challengeCode },
+				{
+					$set: {
+						status: 'completed',
+						completedAt: new Date(now),
+						finalRankings,
+					},
+				}
+			);
+
+			return res.status(200).json({
+				success: true,
+				message: 'Challenge completed',
+				finalRankings,
+			});
+		}
+	} catch (err: any) {
+		console.error('advanceLiveChallenge error', err);
+		return res.status(500).json({ message: 'Server error', details: err.message });
+	}
+};

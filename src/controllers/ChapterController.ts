@@ -37,22 +37,16 @@ const createchapter = asyncWrapper(async (req, res, next) => {
         description,
         category,
     });
-        res.status(200).json({
-        success: true,
-        message: "Chapter created successfully. Content extraction in progress...",
-        chapterId: chapter._id,
-        jobStatus: "Processing",
-    });
-        // Fire-and-forget background extraction (non-blocking)
-        setImmediate(async () => {
-                try {
-                        const base64 = file.buffer.toString("base64");
-                        const requestBody = {
-                                contents: [
-                                        {
-                                                parts: [
-                                                        {
-                                                                text: `You are an expert document cleaning and text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and complete text version of its content.
+
+    // ✅ Extract content synchronously - user waits for completion
+    try {
+        const base64 = file.buffer.toString("base64");
+        const requestBody = {
+            contents: [
+                {
+                    parts: [
+                        {
+                            text: `You are an expert document cleaning and text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and complete text version of its content.
 
 **Instructions:**
 1. **Extract all text.** Capture all readable text from the document, including headings, paragraphs, and lists.
@@ -64,54 +58,75 @@ const createchapter = asyncWrapper(async (req, res, next) => {
 4. **Final output:** Provide ONLY the cleaned, raw text content of the document. Do not summarize, interpret, or add any commentary.
 
 **Output format:** Return the full, uninterpreted text in a single, well-formatted string.`,
-                                                        },
-                                                        {
-                                                                inlineData: {
-                                                                        mimeType: file.mimetype,
-                                                                        data: base64,
-                                                                },
-                                                        },
-                                                ],
-                                        },
-                                ],
-                                generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
-                        } as any;
+                        },
+                        {
+                            inlineData: {
+                                mimeType: file.mimetype,
+                                data: base64,
+                            },
+                        },
+                    ],
+                },
+            ],
+            generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
+        } as any;
 
-                        const response = await retryGeminiApiCall(requestBody);
-                        const data = await response.json();
+        const response = await retryGeminiApiCall(requestBody);
+        const data = await response.json();
 
-                        const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined;
-                        if (!extractedText) {
-                                throw new Error("No text extracted from Gemini API response");
-                        }
+        const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined;
 
-                        await ChapterModel.findByIdAndUpdate(
-                                chapter._id,
-                                {
-                                        overcontent: extractedText,
-                                        updatedBy: req.user._id,
-                                },
-                                { new: true }
-                        );
+        if (extractedText) {
+            await ChapterModel.findByIdAndUpdate(
+                chapter._id,
+                {
+                    overcontent: extractedText,
+                    updatedBy: req.user._id,
+                },
+                { new: true }
+            );
 
-                        // Cache the extracted content
-                        const overcontentKey = CacheKeys.getChapterOverContentKey(chapter._id.toString());
-                        await CacheHelper.set(overcontentKey, extractedText, CacheKeys.TTL.ONE_WEEK);
+            // Cache the extracted content
+            const overcontentKey = CacheKeys.getChapterOverContentKey(chapter._id.toString());
+            await CacheHelper.set(overcontentKey, extractedText, CacheKeys.TTL.ONE_WEEK);
 
-                        // Invalidate chapters list cache for affected users
-                        const affectedUsers = [
-                                folder.ownerId.toString(),
-                                ...((folder.sharedWith || []) as any[]).map((id: any) => id.toString()),
-                        ];
-                        await CacheHelper.invalidateChaptersList(folderId, affectedUsers);
+            // Invalidate chapters list cache for affected users
+            const affectedUsers = [
+                folder.ownerId.toString(),
+                ...((folder.sharedWith || []) as any[]).map((id: any) => id.toString()),
+            ];
+            await CacheHelper.invalidateChaptersList(folderId, affectedUsers);
 
-                        console.log(`✅ [Chapter ${chapter._id}] Background extraction completed (${extractedText.length} chars)`);
-                } catch (e) {
-                        console.error(`❌ [Chapter ${chapter._id}] Background extraction failed:`, e);
-                }
-        });
+            // Invalidate chapter content cache since overcontent changed
+            const contentKey = CacheKeys.getChapterContentKey(chapter._id.toString());
+            await CacheHelper.delete(contentKey);
 
-   
+            console.log(`✅ [Chapter ${chapter._id}] Content extraction completed (${extractedText.length} chars)`);
+        } else {
+            console.warn(`⚠️ [Chapter ${chapter._id}] No text extracted from Gemini API`);
+        }
+    } catch (e) {
+        console.error(`❌ [Chapter ${chapter._id}] Content extraction failed:`, e);
+        // Don't fail the request, chapter is created but without overcontent
+    }
+
+    // Return chapter data without content buffer
+    const chapterResponse = {
+        _id: chapter._id,
+        title: chapter.title,
+        description: chapter.description,
+        folderId: chapter.folderId,
+        createdBy: chapter.createdBy,
+        createdAt: chapter.createdAt,
+        contentType: chapter.contentType,
+    };
+
+    res.status(200).json({
+        success: true,
+        message: "Chapter created successfully with content extraction",
+        chapter: chapterResponse,
+        jobStatus: "Completed",
+    });
 });
 
 const getchapters = asyncWrapper(async (req, res, next) => {

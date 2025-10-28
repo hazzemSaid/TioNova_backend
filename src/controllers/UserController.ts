@@ -52,6 +52,8 @@ const generateTokens = (user: any) => {
 		email: user.email,
 		_id: user._id,
 		role: user.role || 'user',
+		username: user.username,
+		profilePicture: user.profilePicture
 	};
 
 	const accessToken = JWT.sign(

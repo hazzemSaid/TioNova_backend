@@ -11,6 +11,52 @@ import { getMimeType, retryGeminiApiCall } from '../utils/geminiApi';
 
 const db = admin.database();
 
+// Constants
+const QUESTION_DURATION = 30000; // 30 seconds
+
+// Helper function to mark unanswered participants when timer expires
+const markUnansweredParticipants = async (challengeCode: string, questionIndex: number) => {
+	try {
+		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		
+		// Get all active participants
+		const participantsSnap = await baseRef.child('participants').get();
+		const participants = participantsSnap.val() || {};
+		const activeParticipantIds = Object.keys(participants).filter(
+			(id) => participants[id]?.active !== false
+		);
+
+		// Get who has answered
+		const answersSnap = await baseRef.child(`answers/${questionIndex}`).get();
+		const answeredIds = answersSnap.exists() ? Object.keys(answersSnap.val()) : [];
+
+		// Find participants who didn't answer
+		const unansweredIds = activeParticipantIds.filter(id => !answeredIds.includes(id));
+
+		// Mark them as having no answer (time expired)
+		const ts = Date.now();
+		const updates: any = {};
+		for (const userId of unansweredIds) {
+			updates[`answers/${questionIndex}/${userId}`] = {
+				answer: null,
+				isCorrect: false,
+				ts,
+				timeExpired: true,
+				autoMarked: true
+			};
+		}
+
+		if (Object.keys(updates).length > 0) {
+			await baseRef.update(updates);
+		}
+
+		return unansweredIds.length;
+	} catch (err) {
+		console.error('markUnansweredParticipants error:', err);
+		return 0;
+	}
+};
+
 const getQuizQuestionsWithAnswers = async (quizId: string) => {
 	const quiz = await QuizModel.findById(quizId);
 	if (!quiz) throw new Error('Quiz not found');
@@ -180,6 +226,15 @@ Output Format (JSON only, no additional text):
 			return res.status(400).json({ message: 'No questions available for this quiz' });
 		}
 
+		// Select 15 random questions (or fewer if not enough exist)
+		const MAX_QUESTIONS = 15;
+		const shuffled = [...questions];
+		for (let i = shuffled.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+		}
+		const selectedQuestions = shuffled.slice(0, Math.min(MAX_QUESTIONS, shuffled.length));
+
 		// Generate unique code with max attempts to avoid infinite loop
 		let challengeCode = '';
 		let attempts = 0;
@@ -208,9 +263,9 @@ Output Format (JSON only, no additional text):
 				challengeCode,
 			},
 			participants: {
-				[ownerId]: { username, score: 0, joinedAt: now, active: true },
+				[ownerId]: { username, email: req.user.email, photoUrl: req.user.profilePicture, score: 0, joinedAt: now, active: true },
 			},
-			questions, // includes answers for synchronized correctness
+			questions: selectedQuestions, // includes answers for synchronized correctness
 			current: { index: -1 }, // -1 before start
 			answers: {}, // answers[index][userId] = { answer, isCorrect, ts }
 			rankings: [],
@@ -240,7 +295,7 @@ Output Format (JSON only, no additional text):
 					answers: [],
 				},
 			],
-			questions: questions.map((q) => ({
+			questions: selectedQuestions.map((q) => ({
 				questionId: new mongoose.Types.ObjectId(q.questionId),
 				question: q.question,
 				options: q.options,
@@ -256,7 +311,7 @@ Output Format (JSON only, no additional text):
 			message: 'Live challenge created',
 			challengeCode,
 			qr: qrDataUrl,
-			questions: questions
+			questions: selectedQuestions
 		});
 	} catch (err: any) {
 		console.error('createLiveChallenge error:', err);
@@ -291,6 +346,8 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 				active: true,
 				rejoinedAt: now,
 				username, // Update username in case it changed
+				email: req.user.email,
+				photoUrl: req.user.profilePicture,
 			});
 
 			return res.status(200).json({
@@ -308,6 +365,8 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 
 			await baseRef.child(`participants/${userId}`).set({
 				username,
+				email: req.user.email,
+				photoUrl: req.user.profilePicture,
 				score: 0,
 				joinedAt: now,
 				active: true,
@@ -406,15 +465,13 @@ export const startLiveChallenge = async (req: any, res: Response) => {
 		const now = Date.now();
 		await baseRef.update({
 			meta: { ...meta, status: 'in-progress', updatedAt: now, startedAt: now },
-			current: { index: 0, startTime: now }, // Start at first question with timer
+			current: { index: 0, startTime: now, endTime: now + QUESTION_DURATION }, // Start at first question with timer
 		});
 
 		// Mirror status in Mongo
 		await ChallengeResultModel.updateOne(
 			{ challengeCode },
-			{
-				$set: { status: 'in-progress', startedAt: new Date(now) },
-			}
+			{ $set: { status: 'in-progress', startedAt: new Date(now) } }
 		);
 
 		return res.status(200).json({
@@ -448,9 +505,16 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		const meta = metaSnap.val();
 		if (meta.status !== 'in-progress') return res.status(400).json({ message: 'Challenge not in progress' });
 
-		const indexSnap = await baseRef.child('current/index').get();
-		const idx = indexSnap.val();
-		if (typeof idx !== 'number' || idx < 0) return res.status(400).json({ message: 'Invalid current index' });
+		const currentSnap = await baseRef.child('current').get();
+		const current = currentSnap.val() || { index: 0, startTime: 0 };
+		const currentIdx = current.index;
+		
+		if (typeof currentIdx !== 'number' || currentIdx < 0) {
+			return res.status(400).json({ message: 'Invalid current index' });
+		}
+
+		// Check if user is submitting for the current question
+		const idx = currentIdx;
 
 		// Check for duplicate submission
 		const existingAnswerSnap = await baseRef.child(`answers/${idx}/${userId}`).get();
@@ -458,11 +522,31 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 			return res.status(400).json({ message: 'Answer already submitted for this question' });
 		}
 
-		// Check if question has already advanced (late submission)
-		const currentSnap = await baseRef.child('current').get();
-		const current = currentSnap.val() || { index: 0 };
-		if (current.index !== idx) {
-			return res.status(400).json({ message: 'Too late: Question has already advanced' });
+		// Check if time has expired for current question
+		const QUESTION_DURATION = 30000; // 30 seconds
+		const endTimeCurrent = (current.endTime || ((current.startTime || 0) + QUESTION_DURATION));
+		const timeExpired = Date.now() >= endTimeCurrent;
+
+		if (timeExpired) {
+			// Time expired - record as no answer (missed)
+			const ts = Date.now();
+			await baseRef.child(`answers/${idx}/${userId}`).set({ 
+				answer: null, 
+				isCorrect: false, 
+				ts,
+				timeExpired: true 
+			});
+
+			// Don't update score for expired answers
+			// Rankings remain unchanged
+
+			return res.status(400).json({
+				success: false,
+				message: 'Time expired: Answer not recorded',
+				currentIndex: idx,
+				timeExpired: true,
+				isCorrect: false
+			});
 		}
 
 		const qSnap = await baseRef.child(`questions/${idx}`).get();
@@ -486,7 +570,13 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		const pSnap = await baseRef.child('participants').get();
 		const participants = pSnap.val() || {};
 		const rankings = Object.keys(participants)
-			.map((uid) => ({ userId: uid, score: participants[uid]?.score || 0 }))
+			.map((uid) => ({
+				userId: uid,
+				score: participants[uid]?.score || 0,
+				name: participants[uid]?.username || '',
+				email: participants[uid]?.email || '',
+				photoUrl: participants[uid]?.photoUrl || participants[uid]?.profilePicture || '',
+			}))
 			.sort((a, b) => b.score - a.score);
 		await baseRef.child('rankings').set(rankings);
 
@@ -525,18 +615,24 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		const allAnsweredAfter = activeParticipantCountAfter > 0 && activeParticipantIdsAfter.every((id) => answeredIdsAfter.includes(id));
 
 		// Timer check (30 seconds per question) - consistent with advanceLiveChallenge
-		const QUESTION_DURATION = 30000; // 30 seconds
-		const timeExpiredAfter = (Date.now() - (current.startTime || 0)) >= QUESTION_DURATION;
+		const QUESTION_DURATION_CHECK = 30000; // 30 seconds
+		const endTimeAfter = (current.endTime || ((current.startTime || 0) + QUESTION_DURATION_CHECK));
+		const timeExpiredAfter = Date.now() >= endTimeAfter;
 
 		if (allAnsweredAfter || timeExpiredAfter) {
-			// Auto-advance to next question since all participants have answered
+			// Mark any remaining unanswered participants if time expired
+			if (timeExpiredAfter && !allAnsweredAfter) {
+				await markUnansweredParticipants(challengeCode, idx);
+			}
+
+			// Auto-advance to next question since all active participants have answered or time expired
 			const questionsSnap = await baseRef.child('questions').get();
 			const questions = questionsSnap.val() || [];
 			const total = questions.length;
 
 			if (idx + 1 < total) {
 				const advanceTime = Date.now();
-				await baseRef.child('current').set({ index: idx + 1, startTime: advanceTime });
+				await baseRef.child('current').set({ index: idx + 1, startTime: advanceTime, endTime: advanceTime + QUESTION_DURATION });
 				await baseRef.child('meta/updatedAt').set(advanceTime);
 			} else {
 				// Challenge completed
@@ -596,6 +692,7 @@ export const advanceLiveChallenge = async (req: any, res: Response) => {
 		const current = currentSnap.val() || { index: 0, startTime: 0 };
 		const idx = current.index || 0;
 		const startTime = current.startTime || 0;
+		const endTime = current.endTime || (startTime + QUESTION_DURATION);
 
 		const questionsSnap = await baseRef.child('questions').get();
 		const questions = questionsSnap.val() || [];
@@ -617,9 +714,8 @@ export const advanceLiveChallenge = async (req: any, res: Response) => {
 		const allAnswered = activeParticipantCount > 0 && activeParticipantIds.every((id) => answeredIds.includes(id));
 
 		// Timer check (30 seconds per question)
-		const QUESTION_DURATION = 30000; // 30 seconds
 		const now = Date.now();
-		const timeExpired = (now - startTime) >= QUESTION_DURATION;
+		const timeExpired = now >= endTime;
 
 		// Check if advancement is allowed ONLY when all participants (including owner) answered OR time expired
 		const canAdvance = allAnswered || timeExpired;
@@ -631,19 +727,26 @@ export const advanceLiveChallenge = async (req: any, res: Response) => {
 				totalQuestions: total,
 				answeredCount: answeredIds.length,
 				activeParticipantCount,
-				timeRemaining: Math.max(0, QUESTION_DURATION - (now - startTime)),
+				timeRemaining: Math.max(0, (current.endTime || (startTime + QUESTION_DURATION)) - now),
 			});
+		}
+
+		// If advancing due to timer expiration, mark unanswered participants
+		let markedCount = 0;
+		if (timeExpired && !allAnswered) {
+			markedCount = await markUnansweredParticipants(challengeCode, idx);
 		}
 
 		if (idx + 1 < total) {
 			const advanceTime = Date.now();
-			await baseRef.child('current').set({ index: idx + 1, startTime: advanceTime });
+			await baseRef.child('current').set({ index: idx + 1, startTime: advanceTime, endTime: advanceTime + QUESTION_DURATION });
 			await baseRef.child('meta/updatedAt').set(advanceTime);
 			return res.status(200).json({
 				success: true,
 				message: 'Advanced to next question',
 				currentIndex: idx + 1,
 				totalQuestions: total,
+				unansweredCount: markedCount > 0 ? markedCount : undefined,
 			});
 		} else {
 			const now = Date.now();
@@ -679,6 +782,127 @@ export const advanceLiveChallenge = async (req: any, res: Response) => {
 		}
 	} catch (err: any) {
 		console.error('advanceLiveChallenge error', err);
+		return res.status(500).json({ message: 'Server error', details: err.message });
+	}
+};
+
+// Endpoint for frontend to poll and trigger auto-advance when timer expires
+export const checkAndAdvanceIfExpired = async (req: any, res: Response) => {
+	try {
+		const { challengeCode } = req.body || {};
+		const userId = req.user._id?.toString();
+		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+
+		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		const metaSnap = await baseRef.child('meta').get();
+		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		const meta = metaSnap.val();
+		if (meta.status !== 'in-progress') {
+			return res.status(200).json({ 
+				success: true, 
+				needsAdvance: false, 
+				status: meta.status 
+			});
+		}
+
+		const currentSnap = await baseRef.child('current').get();
+		const current = currentSnap.val() || { index: 0, startTime: 0 };
+		const idx = current.index || 0;
+		const startTime = current.startTime || 0;
+		const endTime = current.endTime || (startTime + QUESTION_DURATION);
+
+		// Check if time has expired
+		const now = Date.now();
+		const timeExpired = now >= endTime;
+
+		if (!timeExpired) {
+			return res.status(200).json({
+				success: true,
+				needsAdvance: false,
+				currentIndex: idx,
+				timeRemaining: Math.max(0, (current.endTime || (startTime + QUESTION_DURATION)) - now),
+			});
+		}
+
+		// Time expired - check if already all answered
+		const pSnap = await baseRef.child('participants').get();
+		const participants = pSnap.val() || {};
+		const activeParticipantIds = Object.keys(participants).filter(
+			(id) => participants[id]?.active !== false
+		);
+
+		const answersSnap = await baseRef.child(`answers/${idx}`).get();
+		const answeredIds = answersSnap.exists() ? Object.keys(answersSnap.val()) : [];
+
+		const allAnswered = activeParticipantIds.length > 0 && activeParticipantIds.every((id) => answeredIds.includes(id));
+
+		if (allAnswered) {
+			// Already all answered, no need to mark
+			return res.status(200).json({
+				success: true,
+				needsAdvance: true,
+				allAnswered: true,
+				currentIndex: idx,
+			});
+		}
+
+		// Mark unanswered participants
+		const markedCount = await markUnansweredParticipants(challengeCode, idx);
+
+		// Get questions to check if there are more
+		const questionsSnap = await baseRef.child('questions').get();
+		const questions = questionsSnap.val() || [];
+		const total = questions.length;
+
+		if (idx + 1 < total) {
+			// Advance to next question
+			const advanceTime = Date.now();
+			await baseRef.child('current').set({ index: idx + 1, startTime: advanceTime, endTime: advanceTime + QUESTION_DURATION });
+			await baseRef.child('meta/updatedAt').set(advanceTime);
+
+			return res.status(200).json({
+				success: true,
+				needsAdvance: true,
+				advanced: true,
+				currentIndex: idx + 1,
+				totalQuestions: total,
+				unansweredCount: markedCount,
+			});
+		} else {
+			// Quiz completed
+			await baseRef.update({
+				meta: { ...meta, status: 'completed', updatedAt: now, completedAt: now },
+			});
+
+			// Persist final rankings
+			const rankingsSnap = await baseRef.child('rankings').get();
+			const rankings = (rankingsSnap.val() || []) as Array<{ userId: string; score: number }>;
+			const finalRankings = rankings.map((r, i) => ({
+				userId: new mongoose.Types.ObjectId(r.userId),
+				score: r.score,
+				rank: i + 1,
+			}));
+
+			await ChallengeResultModel.updateOne(
+				{ challengeCode },
+				{
+					$set: {
+						status: 'completed',
+						completedAt: new Date(now),
+						finalRankings,
+					},
+				}
+			);
+
+			return res.status(200).json({
+				success: true,
+				needsAdvance: true,
+				completed: true,
+				finalRankings,
+			});
+		}
+	} catch (err: any) {
+		console.error('checkAndAdvanceIfExpired error:', err);
 		return res.status(500).json({ message: 'Server error', details: err.message });
 	}
 };

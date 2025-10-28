@@ -1,6 +1,7 @@
 import express from 'express';
 import {
     advanceLiveChallenge,
+    checkAndAdvanceIfExpired,
     createLiveChallenge,
     disconnectFromLiveChallenge,
     joinLiveChallenge,
@@ -28,5 +29,8 @@ router.post('/live/challenges/answer', verifyToken, submitLiveAnswer);
 
 // Advance to next question or finish (owner or force)
 router.post('/live/challenges/advance', verifyToken, advanceLiveChallenge);
+
+// Check if timer expired and auto-advance (called by frontend poll)
+router.post('/live/challenges/check-advance', verifyToken, checkAndAdvanceIfExpired);
 
 export default router;

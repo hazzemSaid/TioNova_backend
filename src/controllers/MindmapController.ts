@@ -422,8 +422,47 @@ Generate smart notes about "${text}" based on the chapter content in the PDF.`;
         }
     });
 })
+const getmindmap = asyncWrapper(async (req, res, next) => {
+    const { chapterId } = req.params;
+    const user = req.user;
+
+    // Validate user
+    if (!user || !user._id) {
+        return next(ErrorHandler.createError("User authentication required", 401));
+    }
+
+    // Validate chapterId
+    if (!chapterId) {
+        return next(ErrorHandler.createError("Chapter ID is required", 400));
+    }
+
+    // Fetch chapter
+    const chapter = await ChapterModel.findById(chapterId);
+    if (!chapter) {
+        return next(ErrorHandler.createError("Chapter not found", 404));
+    }
+
+    // Check if mindmap exists for this chapter
+    if (!chapter.mindmapId) {
+        return next(ErrorHandler.createError("Mindmap not found for this chapter", 404));
+    }
+
+    // Fetch mindmap with populated nodes
+    const mindmapModel = await MindmapModel.findById(chapter.mindmapId)
+        .populate('nodes');
+    
+    if (!mindmapModel) {
+        return next(ErrorHandler.createError("Mindmap not found", 404));
+    }
+
+    return res.status(200).json({
+        success: true,
+        message: "Mindmap fetched successfully",
+        data: mindmapModel,
+    });
+});
 const MindmapController = {
-    createMindmap, saveMindmap, generatecontent
+    createMindmap, saveMindmap, generatecontent, getmindmap
 };
 
 export default MindmapController;

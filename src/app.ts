@@ -4,9 +4,16 @@ import express, { NextFunction, Request, Response } from "express";
 import sse from "../api/sseRouter";
 import { connectDB } from "./database/mongodb";
 import analysisRouter from "./routers/analysisRouter";
+import ChapterRouter from "./routers/ChapterRouter";
+import FolderRouter from "./routers/FolderRouter";
 import LiveChallengeRouter from "./routers/LiveChallengeRouter";
+import MindmapRouter from "./routers/MindmapRouter";
+import NoteRouter from "./routers/NoteRouter";
 import PdfRouter from "./routers/PdfRouter";
 import profileRouter from "./routers/profileRouter";
+import QuizRouter from "./routers/QuizRouter";
+import ShareRouter from "./routers/ShareRouter";
+import SummaryRouter from "./routers/SummaryRouter";
 import UserRoute from "./routers/UserRouter";
 import { ICustomError } from "./utils/error";
 // Load env
@@ -45,6 +52,13 @@ app.get("/api/v1/health", (req, res) => {
 });
 
 app.use("/api/v1", UserRoute);
+app.use("/api/v1", FolderRouter);
+app.use("/api/v1", ChapterRouter);
+app.use("/api/v1", QuizRouter);
+app.use("/api/v1", SummaryRouter);
+app.use("/api/v1", MindmapRouter);
+app.use("/api/v1", NoteRouter);
+app.use("/api/v1", ShareRouter);
 app.use("/api/v1", PdfRouter);
 app.use("/api/v1", LiveChallengeRouter);
 app.use("/api/v1", analysisRouter);

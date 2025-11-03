@@ -27,8 +27,9 @@ const UserSchema = new mongoose.Schema({
 	},
 
 	// Profile information
-	streak: { type: Number, default: 0 },
-	profilePicture: { type: String, default: 'https://res.cloudinary.com/dr5cpch1n/image/upload/v1752943485/Unknown_person_o3xaku.jpg' },
+
+	// streak: { type: Number, default: 0 },
+	// profilePicture: { type: String, default: 'https://res.cloudinary.com/dr5cpch1n/image/upload/v1752943485/Unknown_person_o3xaku.jpg' },
 	role: { type: String, enum: ['user', 'admin'], default: 'user' },
 
 	// Account status
@@ -91,8 +92,6 @@ export interface IUser {
 	email: string;
 	password: string;
 	refreshtoken?: string;
-	streak?: number;
-	profilePicture?: string;
 	role?: 'user' | 'admin';
 	verified?: boolean;
 	createdAt?: Date;
@@ -122,8 +121,6 @@ UserSchema.methods.toAuthJSON = function () {
 		_id: this._id,
 		username: this.username,
 		email: this.email,
-		profilePicture: this.profilePicture,
-		streak: this.streak,
 		verified: this.verified,
 		role: this.role,
 		createdAt: this.createdAt,
@@ -169,8 +166,8 @@ UserSchema.virtual('profile').get(function () {
 		id: this._id,
 		username: this.username,
 		email: this.email,
-		profilePicture: this.profilePicture,
-		streak: this.streak,
+		// profilePicture: this.profilePicture,
+		// streak: this.streak,
 		verified: this.verified,
 		role: this.role,
 		memberSince: this.createdAt,

@@ -182,4 +182,9 @@ export class CacheKeys {
     static getMindmapKey(chapterId: string): string {
         return `mindmap:chapter:${chapterId}`;
     }
+
+    // ==================== Analysis Related Keys ====================
+    static getAnalysisKey(userId: string): string {
+        return `analysis:user:${userId}`;
+    }
 }

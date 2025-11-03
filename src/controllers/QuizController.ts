@@ -4,6 +4,8 @@ import ChapterModel from "../models/ChapterModel";
 import QuestionModel from "../models/QuestionModel";
 import QuizModel from "../models/QuizModel";
 import UserQuizStatusModel from "../models/UserQuizStatusModel";
+import { AnalysisService } from "../services/analysisService";
+import { ProfileService } from "../services/profileService";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
@@ -392,6 +394,16 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
         },
         { new: true, upsert: true }
     );
+
+    // ✅ Update analysis: average score
+    try {
+        await AnalysisService.updateAvgScore(userId.toString(), scorePercent);
+        await ProfileService.incrementQuizzesTaken(userId.toString());
+        await ProfileService.updateAverageQuizScore(userId.toString(), scorePercent);
+        await ProfileService.updateStreak(userId.toString());
+    } catch (e) {
+        console.error("Error updating analysis/profile:", e);
+    }
 
     return res.status(200).json({
         success: true,

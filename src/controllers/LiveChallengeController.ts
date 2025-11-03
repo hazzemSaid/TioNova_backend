@@ -6,6 +6,7 @@ import ChallengeResultModel from '../models/ChallengeResultModel';
 import ChapterModel from '../models/ChapterModel';
 import QuestionModel from '../models/QuestionModel';
 import QuizModel from '../models/QuizModel';
+import { ProfileService } from '../services/profileService';
 import { admin } from '../utils/firebase';
 import { getMimeType, retryGeminiApiCall } from '../utils/geminiApi';
 import { callGroqApi, extractGroqText, parseGroqJson } from '../utils/groqApi';
@@ -572,6 +573,13 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 
 		// Write answer
 		await baseRef.child(`answers/${idx}/${userId}`).set({ answer: normalized, isCorrect, ts });
+
+		// ✅ Update streak when user participates in challenge
+		try {
+			await ProfileService.updateStreak(userId);
+		} catch (e) {
+			console.error("Error updating streak:", e);
+		}
 
 		// Update participant score
 		const scoreRef = baseRef.child(`participants/${userId}/score`);

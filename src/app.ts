@@ -3,9 +3,11 @@ import * as dotenv from "dotenv";
 import express, { NextFunction, Request, Response } from "express";
 import sse from "../api/sseRouter";
 import { connectDB } from "./database/mongodb";
-import PdfRouter from "./routers/PdfRouter";
-import UserRoute from "./routers/UserRouter";
+import analysisRouter from "./routers/analysisRouter";
 import LiveChallengeRouter from "./routers/LiveChallengeRouter";
+import PdfRouter from "./routers/PdfRouter";
+import profileRouter from "./routers/profileRouter";
+import UserRoute from "./routers/UserRouter";
 import { ICustomError } from "./utils/error";
 // Load env
 dotenv.config();
@@ -45,6 +47,8 @@ app.get("/api/v1/health", (req, res) => {
 app.use("/api/v1", UserRoute);
 app.use("/api/v1", PdfRouter);
 app.use("/api/v1", LiveChallengeRouter);
+app.use("/api/v1", analysisRouter);
+app.use("/api/v1", profileRouter);
 app.use("/api/v1", sse);
 
 app.use(

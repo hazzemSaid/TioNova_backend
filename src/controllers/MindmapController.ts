@@ -2,6 +2,8 @@ import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
 import MindmapModel from "../models/MindmapModel";
 import NodeModel from "../models/NodeModel";
+import { AnalysisService } from "../services/analysisService";
+import { ProfileService } from "../services/profileService";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
 import { callGroqApi, extractGroqText, parseGroqJson } from "../utils/groqApi";
@@ -240,6 +242,15 @@ Guidelines:
 
     // Populate nodes for response
     await mindmapModel.populate('nodes');
+
+    // ✅ Update analysis: last mindmaps
+    try {
+        await AnalysisService.updateLastMindmap(user._id.toString(), mindmapModel._id.toString());
+        await ProfileService.incrementMindmapsCreated(user._id.toString());
+        await ProfileService.updateStreak(user._id.toString());
+    } catch (e) {
+        console.error("Error updating analysis/profile:", e);
+    }
 
     return res.status(200).json({
         success: true,

@@ -1,6 +1,8 @@
 import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
 import SummaryModel from "../models/SummaryModel";
+import { AnalysisService } from "../services/analysisService";
+import { ProfileService } from "../services/profileService";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
@@ -171,6 +173,15 @@ Guidelines:
 
     // ✅ Cache the result
     await CacheHelper.set(summaryKey, summaryJson, CacheKeys.TTL.ONE_WEEK);
+
+    // ✅ Update analysis: last summary
+    try {
+        await AnalysisService.updateLastSummary(user._id.toString(), summaryModel._id.toString());
+        await ProfileService.incrementSummariesCreated(user._id.toString());
+        await ProfileService.updateStreak(user._id.toString());
+    } catch (e) {
+        console.error("Error updating analysis/profile:", e);
+    }
 
     return res.status(200).json({
         success: true,

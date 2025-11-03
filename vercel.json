@@ -3,9 +3,6 @@
   "functions": {
     "api/index.ts": {
       "runtime": "@vercel/node@5.3.22"
-    },
-    "api/worker.ts": {
-      "runtime": "@vercel/node@5.3.22"
     }
   },
   "routes": [{ "src": "/(.*)", "dest": "/api/index.ts" }]

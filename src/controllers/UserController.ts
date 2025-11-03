@@ -8,6 +8,8 @@ import { OAuth2Client } from "google-auth-library";
 import JWT from "jsonwebtoken";
 import asyncWrapper from "../middleware/asyncwrapper";
 import userModel from '../models/UserModel';
+import { AnalysisService } from "../services/analysisService";
+import { ProfileService } from "../services/profileService";
 import { hash } from "../utils/bcryptcodegen";
 import ErrorHandler from "../utils/error";
 import sendEmail from '../utils/gmail';
@@ -52,8 +54,7 @@ const generateTokens = (user: any) => {
 		email: user.email,
 		_id: user._id,
 		role: user.role || 'user',
-		username: user.username,
-		profilePicture: user.profilePicture
+		username: user.username
 	};
 
 	const accessToken = JWT.sign(
@@ -71,19 +72,24 @@ const generateTokens = (user: any) => {
 	return { accessToken, refreshToken };
 };
 
-const createUserResponse = (user: any, accessToken: string, refreshToken: string) => ({
-	success: true,
-	user: {
-		username: user.username,
-		email: user.email,
-		profilePicture: user.profilePicture,
-		user_id: user._id.toString(),
-		streak: user.streak,
-		verified: user.verified
-	},
-	token: accessToken,
-	refreshToken
-});
+const createUserResponse = async (user: any, accessToken: string, refreshToken: string) => {
+	// Fetch profile data
+	let profile = await ProfileService.getProfile(user._id.toString());
+	
+	return {
+		success: true,
+		user: {
+			username: user.username,
+			email: user.email,
+			profilePicture: profile?.profilePicture || 'https://res.cloudinary.com/dr5cpch1n/image/upload/v1752943485/Unknown_person_o3xaku.jpg',
+			user_id: user._id.toString(),
+			streak: profile?.streak || 0,
+			verified: user.verified
+		},
+		token: accessToken,
+		refreshToken
+	};
+};
 
 // Register function
 const register = asyncWrapper(async (req, res, next) => {
@@ -115,7 +121,7 @@ const register = asyncWrapper(async (req, res, next) => {
 		await sendEmail(email, verificationCode);
 
 		// Create user (password will be hashed by pre-save middleware)
-		await userModel.create({
+		const newUser = await userModel.create({
 			username,
 			email,
 			password,
@@ -123,6 +129,18 @@ const register = asyncWrapper(async (req, res, next) => {
 			verificationCode: hashedCode,
 			verificationCodeExpire: codeExpiry,
 		});
+
+		// ✅ Initialize analysis document for new user
+		try {
+			await AnalysisService.initializeAnalysis(newUser._id.toString());
+			await ProfileService.initializeProfile(
+				newUser._id.toString(), 
+				newUser.username, 
+				(newUser as any).profilePicture
+			);
+		} catch (e) {
+			console.error("Error initializing analysis/profile:", e);
+		}
 
 		return res.status(200).json({
 			success: true,
@@ -180,8 +198,9 @@ const verifyEmail = asyncWrapper(async (req, res, next) => {
 	user.refreshtoken = await hash(refreshToken);
 	await user.save();
 
+	const response = await createUserResponse(user, accessToken, refreshToken);
 	return res.status(200).json({
-		...createUserResponse(user, accessToken, refreshToken),
+		...response,
 		message: "Email verified successfully"
 	});
 });
@@ -256,7 +275,8 @@ const login = asyncWrapper(async (req, res, next) => {
 	user.refreshtoken = await hash(refreshToken);
 	await user.save();
 
-	return res.status(200).json(createUserResponse(user, accessToken, refreshToken));
+	const response = await createUserResponse(user, accessToken, refreshToken);
+	return res.status(200).json(response);
 });
 
 // Refresh token function
@@ -292,7 +312,8 @@ const refreshToken = asyncWrapper(async (req, res, next) => {
 		user.refreshtoken = await hash(newRefreshToken);
 		await user.save();
 
-		return res.status(200).json(createUserResponse(user, accessToken, newRefreshToken));
+		const response = await createUserResponse(user, accessToken, newRefreshToken);
+		return res.status(200).json(response);
 	} catch (error) {
 		return next(ErrorHandler.createError("Invalid or expired refresh token", 401));
 	}
@@ -373,7 +394,8 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 			await user.save();
 
 			console.log(`✅ User logged in: ${email}`);
-			return res.status(200).json(createUserResponse(user, accessToken, refreshToken));
+			const response = await createUserResponse(user, accessToken, refreshToken);
+			return res.status(200).json(response);
 		} else {
 			// New user - create account
 			const randomPassword = crypto.randomBytes(32).toString('hex');
@@ -388,12 +410,25 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 				googleId,
 			});
 
+			// ✅ Initialize analysis document for new Google user
+			try {
+				await AnalysisService.initializeAnalysis(user._id.toString());
+				await ProfileService.initializeProfile(
+					user._id.toString(), 
+					user.username, 
+					(user as any).profilePicture
+				);
+			} catch (e) {
+				console.error("Error initializing analysis/profile:", e);
+			}
+
 			const { accessToken, refreshToken } = generateTokens(user);
 			user.refreshtoken = await hash(refreshToken);
 			await user.save();
 
 			console.log(`✅ New user created: ${email}`);
-			return res.status(201).json(createUserResponse(user, accessToken, refreshToken));
+			const response = await createUserResponse(user, accessToken, refreshToken);
+			return res.status(201).json(response);
 		}
 	} catch (error) {
 		console.error('❌ Google authentication error:', error);
@@ -531,8 +566,9 @@ const resetPassword = asyncWrapper(async (req, res, next) => {
 		user.refreshtoken = await hash(refreshToken);
 		await user.save();
 
+		const response = await createUserResponse(user, accessToken, refreshToken);
 		return res.status(200).json({
-			...createUserResponse(user, accessToken, refreshToken),
+			...response,
 			message: "Password reset successfully"
 		});
 	} catch (error) {

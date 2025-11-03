@@ -4,6 +4,8 @@ import ChapterModel from "../models/ChapterModel";
 import FolderModel from "../models/FolderModel";
 // Queue not used in this path; background extraction runs inline after responding
 // import { chapterQueue } from "../queues/chapterQueue";
+import { AnalysisService } from "../services/analysisService";
+import { ProfileService } from "../services/profileService";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
@@ -110,6 +112,14 @@ const createchapter = asyncWrapper(async (req, res, next) => {
         // Don't fail the request, chapter is created but without overcontent
     }
 
+    // ✅ Update analysis: recent chapters and increment total chapters
+    try {
+        await AnalysisService.updateRecentChapters(req.user._id.toString(), chapter._id.toString());
+        await AnalysisService.updateRecentFolders(req.user._id.toString(), folderId);
+    } catch (e) {
+        console.error("Error updating analysis:", e);
+    }
+
     // Return chapter data without content buffer
     const chapterResponse = {
         _id: chapter._id,
@@ -138,70 +148,63 @@ const getchapters = asyncWrapper(async (req, res, next) => {
         return next(ErrorHandler.createError("folderId is required", 400));
     }
 
-    const { data: chapters, cached } = await CacheHelper.getOrSet(
-        CacheKeys.getChaptersListKey(folderId, userId),
-        async () => {
-            const chaptersWithStatus = await ChapterModel.aggregate([
-                { $match: { folderId: new mongoose.Types.ObjectId(folderId) } },
-                {
-                    $lookup: {
-                        from: "userquizstatuses",
-                        let: { chapterId: "$_id" },
-                        pipeline: [
-                            {
-                                $match: {
-                                    $expr: {
-                                        $and: [
-                                            { $eq: ["$chapterId", "$$chapterId"] },
-                                            { $eq: ["$userId", new mongoose.Types.ObjectId(userId)] },
-                                        ],
-                                    },
-                                },
+    const chapters = await ChapterModel.aggregate([
+        { $match: { folderId: new mongoose.Types.ObjectId(folderId) } },
+        {
+            $lookup: {
+                from: "userquizstatuses",
+                let: { chapterId: "$_id" },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: {
+                                $and: [
+                                    { $eq: ["$chapterId", "$$chapterId"] },
+                                    { $eq: ["$userId", new mongoose.Types.ObjectId(userId)] },
+                                ],
                             },
-                            { $sort: { updatedAt: -1 } },
-                            { $limit: 1 },
-                        ],
-                        as: "userQuizStatus",
-                    },
-                },
-                {
-                    $addFields: {
-                        userQuizStatusObj: { $arrayElemAt: ["$userQuizStatus", 0] },
-                    },
-                },
-                {
-                    $project: {
-                        _id: 1,
-                        title: 1,
-                        description: 1,
-                        createdAt: 1,
-                        createdBy: 1,
-                        quizId: 1,
-                        summaryId: 1,
-                        quizStatus: { $ifNull: ["$userQuizStatusObj.status", "NotTaken"] },
-                        quizScore: { $ifNull: ["$userQuizStatusObj.score", 0] },
-                        quizCompleted: {
-                            $cond: [{ $ifNull: ["$userQuizStatusObj", false] }, true, false],
                         },
                     },
-                },
-            ]);
-
-            return chaptersWithStatus;
+                    { $sort: { updatedAt: -1 } },
+                    { $limit: 1 },
+                ],
+                as: "userQuizStatus",
+            },
         },
-        CacheKeys.TTL.SIX_HOURS
-    );
+        {
+            $addFields: {
+                userQuizStatusObj: { $arrayElemAt: ["$userQuizStatus", 0] },
+            },
+        },
+        {
+            $project: {
+                _id: 1,
+                title: 1,
+                description: 1,
+                createdAt: 1,
+                createdBy: 1,
+                quizId: 1,
+                summaryId: 1,
+                mindmapId: 1,
+                quizStatus: { $ifNull: ["$userQuizStatusObj.status", "NotTaken"] },
+                quizScore: { $ifNull: ["$userQuizStatusObj.score", 0] },
+                quizCompleted: {
+                    $cond: [{ $ifNull: ["$userQuizStatusObj", false] }, true, false],
+                },
+            },
+        },
+    ]);
 
     res.status(200).json({
         success: true,
         message: "Chapters retrieved successfully",
         chapters,
-        cached,
     });
 });
 
 const getchaptercontent = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.params;
+    const userId = req.user._id || req.user.id;
     const chapter = await ChapterModel.findById(chapterId);
 
     if (!chapter) {
@@ -211,6 +214,13 @@ const getchaptercontent = asyncWrapper(async (req, res, next) => {
     const cachedContent = await CacheHelper.getCachedChapterContent(chapterId);
 
     if (cachedContent) {
+        // ✅ Update streak when user accesses content
+        try {
+            await ProfileService.updateStreak(userId.toString());
+        } catch (e) {
+            console.error("Error updating streak:", e);
+        }
+
         return res.status(200).json({
             success: true,
             message: "Chapter content retrieved from cache",
@@ -226,6 +236,13 @@ const getchaptercontent = asyncWrapper(async (req, res, next) => {
         chapter.content,
         CacheKeys.TTL.ONE_WEEK
     );
+
+    // ✅ Update streak when user accesses content
+    try {
+        await ProfileService.updateStreak(userId.toString());
+    } catch (e) {
+        console.error("Error updating streak:", e);
+    }
 
     res.status(200).json({
         success: true,

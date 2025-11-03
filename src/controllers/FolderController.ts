@@ -3,6 +3,7 @@ import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
 import FolderModel from "../models/FolderModel";
 import UserModel from "../models/UserModel";
+import { AnalysisService } from "../services/analysisService";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
@@ -74,6 +75,13 @@ const createfolder = asyncWrapper(async (req, res, next) => {
         await Promise.all(
             affectedUserIds.map(userId => CacheHelper.invalidateUserFolders(userId))
         );
+    }
+
+    // ✅ Update analysis: recent folders
+    try {
+        await AnalysisService.updateRecentFolders(req.user._id.toString(), folder._id.toString());
+    } catch (e) {
+        console.error("Error updating analysis:", e);
     }
 
     res.status(200).json({

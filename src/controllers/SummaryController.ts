@@ -5,6 +5,7 @@ import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
+import { callGroqApi, extractGroqText, parseGroqJson } from "../utils/groqApi";
 
 const summarizecchapter = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -52,88 +53,108 @@ const summarizecchapter = asyncWrapper(async (req, res, next) => {
         }
     }
 
-    // ✅ Generate new summary
-    const chapterContent = chapter.overcontent || chapter.content?.toString("utf-8") || "";
+    // ✅ Generate new summary - use Groq if overcontent exists, otherwise fallback to Gemini
+    const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
     
-    if (!chapterContent) {
-        return next(ErrorHandler.createError("Chapter content missing", 400));
+    if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
+        return next(ErrorHandler.createError("Chapter content is missing", 400));
     }
 
-    const base64File = chapter.content?.toString("base64") || "";
-    const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-    
-    const requestBody = {
-        contents: [
-            {
-                parts: [
-                    {
-                        text: `You are a highly detailed academic assistant that **converts educational content into structured JSON**.
-                    
-                        Task:
-                        - Carefully analyze the provided content.
-                        - Output **only valid JSON** strictly following the schema below.
-                        - Do not include any text, markdown, comments, or explanations outside the JSON.
-                        - The output must be **directly parseable JSON** (no errors, no trailing commas).
-                        
-                        Schema:
-                        
-                        {
-                          "key_concepts": [
-                            {
-                              "title": "Concise concept title",
-                              "text": "Detailed explanation in 5–8 academic sentences. The text should highlight definitions, theory, context, and connections to related concepts.",
-                              "tags": ["keyword1", "keyword2", "keyword3"],
-                              "difficulty_level": "easy | medium | hard"
-                            }
-                          ],
-                          "examples": [
-                            {
-                              "concept": "Reference to related concept title",
-                              "example": "Worked-out example with step-by-step reasoning, using real numbers, equations, or problem-solving steps.",
-                              "notes": "Optional practical insight, clarification, or common mistake in one short sentence."
-                            }
-                          ],
-                          "professional_implications": [
-                            {
-                              "title": "Relevant professional field (e.g., Engineering, Medicine, Computer Science, Business)",
-                              "text": "In-depth explanation of how the concept is used in real-world practice, why it matters, and its implications in that field."
-                            }
-                          ]
-                        }
-                        
-                        Guidelines:
-                        - Always include at least 3–5 key_concepts.
-                        - Provide at least 2 examples (with real calculations, step-by-step if possible).
-                        - Each professional_implication should connect theory to real-world professional impact.
-                        - Ensure the tone is formal, academic, and precise.
-                        - Never output empty arrays: if no data, omit that section completely.
-                        - Never output markdown, code fences, or explanations — only the JSON object.
-                        
-                        Now process the following content:
-                        ${chapter.overcontent || ""}`,
-                    },
-                    ...(chapter.overcontent ? [] : [
-                        { inlineData: { mimeType, data: base64File } }
-                    ]),
-                ],
-            },
-        ],
-        generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
-    };
+    const systemPrompt = `You are an expert AI educator. Generate a structured, high-quality JSON summary of educational content using this schema:
 
-    const response = await retryGeminiApiCall(requestBody);
-    const data = await response.json();
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    
+{
+  "chapter_title": "string",
+  "chapter_overview": {
+    "title": "Chapter Overview",
+    "summary": "A clear, 5–8 sentence paragraph that explains the topic comprehensively in natural language. It should cover what the concept is, why it matters, and its main principles or mechanisms."
+  },
+  "key_takeaways": [
+    "4–6 short bullet points summarizing the essential facts or principles."
+  ],
+  "key_points": [
+    {
+      "title": "Concept or Subtopic Title",
+      "type": "concept | important | example",
+      "content": "2–4 sentences explaining the idea, how it works, and why it's important. Write in an educational and concise style."
+    }
+  ],
+  "definitions": [
+    {
+      "term": "Key Term",
+      "definition": "Concise, clear definition that explains the meaning in one or two sentences."
+    }
+  ],
+  "flashcards": [
+    {
+      "question": "A direct question that tests understanding of a concept",
+      "answer": "A concise factual answer (1–2 sentences)."
+    }
+  ]
+}
+
+Guidelines:
+- Output **only valid JSON** — no Markdown, no extra commentary, no quotes around keys that aren't needed.
+- Write in clear, accessible academic English for undergraduate computer science students.
+- Be accurate, concise, and educational.
+- Fill all fields meaningfully, even if the source text lacks detail (infer sensibly).
+- Focus on conceptual clarity, real-world relevance, and test-ready phrasing for flashcards.`;
+
     let summaryJson;
-    try {
-        summaryJson = JSON.parse(rawText);
-    } catch {
+
+    if (hasOvercontent) {
+        // ✅ Use Groq with extracted text (fast path)
+        const userPrompt = `Generate the JSON summary for this chapter content:\n\n${chapter.overcontent}`;
+
+        const requestBody = {
+            model: 'llama-3.3-70b-versatile' as const,
+            messages: [
+                { role: 'system' as const, content: systemPrompt },
+                { role: 'user' as const, content: userPrompt }
+            ],
+            temperature: 0.5,
+            max_tokens: 8192,
+        };
+
+        const response = await callGroqApi(requestBody);
+        const rawText = extractGroqText(response);
+        
         try {
-            const { jsonrepair } = require("jsonrepair");
-            summaryJson = JSON.parse(jsonrepair(rawText));
+            summaryJson = parseGroqJson(rawText);
         } catch (err) {
-            return next(ErrorHandler.createError("Invalid Gemini JSON response", 400));
+            return next(ErrorHandler.createError("Invalid JSON response from Groq API", 400, err));
+        }
+    } else {
+        // ✅ Fallback to Gemini with PDF (multi-modal path)
+        console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
+        
+        const base64File = chapter.content.toString("base64");
+        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+        
+        const geminiPrompt = `${systemPrompt}\n\nNow generate the JSON summary for the chapter content in this PDF.`;
+
+        const requestBody = {
+            contents: [{
+                parts: [
+                    { text: geminiPrompt },
+                    { inlineData: { mimeType, data: base64File } }
+                ]
+            }],
+            generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
+        };
+
+        const response = await retryGeminiApiCall(requestBody);
+        const data = await response.json();
+        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        
+        try {
+            summaryJson = JSON.parse(rawText);
+        } catch {
+            try {
+                const { jsonrepair } = require("jsonrepair");
+                summaryJson = JSON.parse(jsonrepair(rawText));
+            } catch (err) {
+                return next(ErrorHandler.createError("Invalid JSON response from Gemini API", 400));
+            }
         }
     }
 

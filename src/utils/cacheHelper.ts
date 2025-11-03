@@ -1,9 +1,37 @@
 // cacheHelper.ts - Centralized cache operations with error handling
 
-import { getCache, setCache, delCache } from "../../api/redisClient";
+import { delCache, getCache, getRedisClient, setCache } from "../../api/redisClient";
 import { CacheKeys } from "../utils/cache_keys";
 
 export class CacheHelper {
+
+    /**
+     * Invalidate all users' folder list caches (folders:list:user:*)
+     */
+    static async invalidateAllUsersFolders(): Promise<void> {
+        try {
+            const client = getRedisClient();
+            let cursor = "0";
+            let keysToDelete: string[] = [];
+            do {
+                // Upstash Redis uses SCAN with count and pattern
+                const result = await client.scan(cursor, { match: 'folders:list:user:*', count: 100 });
+                cursor = result[0];
+                const keys = result[1];
+                if (keys && keys.length > 0) {
+                    keysToDelete.push(...keys);
+                }
+            } while (cursor !== "0");
+            if (keysToDelete.length > 0) {
+                await Promise.all(keysToDelete.map(key => client.del(key)));
+                console.log(`[Cache] Invalidated all users' folders list (${keysToDelete.length} keys)`);
+            } else {
+                console.log(`[Cache] No user folders list keys found to invalidate.`);
+            }
+        } catch (error) {
+            console.error('[Cache] Error invalidating all users folders:', error);
+        }
+    }
     /**
      * Get data from cache with automatic JSON parsing
      */

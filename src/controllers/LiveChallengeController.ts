@@ -8,6 +8,7 @@ import QuestionModel from '../models/QuestionModel';
 import QuizModel from '../models/QuizModel';
 import { admin } from '../utils/firebase';
 import { getMimeType, retryGeminiApiCall } from '../utils/geminiApi';
+import { callGroqApi, extractGroqText, parseGroqJson } from '../utils/groqApi';
 
 const db = admin.database();
 
@@ -86,16 +87,18 @@ export const createLiveChallenge = async (req: any, res: Response) => {
 		if (!quiz) {
 			const chapter = await ChapterModel.findById(chapterId);
 			if (!chapter) return res.status(404).json({ message: 'Chapter not found' });
-			if (!chapter.overcontent && !Buffer.isBuffer(chapter.content)) {
-				return res.status(400).json({ message: 'Chapter content is required for quiz generation' });
+			
+			const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
+			
+			if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
+				return res.status(400).json({ message: 'Chapter content is missing' });
 			}
 
 			const needed = 50;
-			const mcqPrompt = `
-You are an AI assistant that creates multiple choice quizzes based on educational content.
+			const systemPrompt = `You are an AI assistant that creates multiple choice quizzes based on educational content.
 
 IMPORTANT INSTRUCTIONS:
-1. Read and analyze the provided chapter content carefully (PDF or text)
+1. Read and analyze the provided chapter content carefully
 2. Generate exactly ${needed} new questions ONLY from the information contained in this specific chapter
 3. Questions must be directly related to the topics, concepts, and information present in the chapter content
 4. Do NOT create generic questions or questions from outside knowledge
@@ -109,7 +112,7 @@ Requirements for each question:
 - Only one option should be correct
 - Provide a clear explanation referencing the chapter content
 
-Output Format (JSON only, no additional text):
+Output Format (JSON array only, no additional text):
 [
   {
     "question": "Your question text based on chapter content?",
@@ -117,66 +120,77 @@ Output Format (JSON only, no additional text):
     "answer": "a",
     "explanation": "Brief explanation referencing the chapter content."
   }
-]
-`;
+]`;
 
-			const contents: any[] = [{ parts: [{ text: mcqPrompt }] }];
-			
-			if (!chapter.overcontent) {
-				if (!chapter.contentType || !chapter.content) {
-					return res.status(400).json({ message: 'Invalid chapter content for PDF' });
+			let rawText: string;
+
+			if (hasOvercontent) {
+				// ✅ Use Groq with extracted text (fast path)
+				const userPrompt = `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
+
+				try {
+					const response = await callGroqApi({
+						model: 'llama-3.3-70b-versatile' as const,
+						messages: [
+							{ role: 'system' as const, content: systemPrompt },
+							{ role: 'user' as const, content: userPrompt }
+						],
+						temperature: 0.7,
+						max_tokens: 8192,
+					});
+					rawText = extractGroqText(response);
+				} catch (apiErr) {
+					console.error('Groq API error:', apiErr);
+					return res.status(500).json({ message: 'Failed to generate quiz questions' });
 				}
+			} else {
+				// ✅ Fallback to Gemini with PDF (multi-modal path)
+				console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
+				
 				const base64File = chapter.content.toString("base64");
 				const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-				contents[0].parts.push({ 
-					inlineData: { mimeType, data: base64File } 
-				});
-			} else {
-				contents[0].parts.push({ 
-					text: `\n\nChapter Content:\n${chapter.overcontent}` 
-				});
+				
+				const geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
+
+				try {
+					const response = await retryGeminiApiCall({
+						contents: [{
+							parts: [
+								{ text: geminiPrompt },
+								{ inlineData: { mimeType, data: base64File } }
+							]
+						}],
+						generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+					});
+					const data = await response.json();
+					rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+				} catch (apiErr) {
+					console.error('Gemini API error:', apiErr);
+					return res.status(500).json({ message: 'Failed to generate quiz questions' });
+				}
 			}
 
-			const requestBody = {
-				contents,
-				generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
-			};
-
-			let response;
-			try {
-				response = await retryGeminiApiCall(requestBody);
-			} catch (apiErr) {
-				console.error('Gemini API error:', apiErr);
-				return res.status(500).json({ message: 'Failed to generate quiz questions' });
-			}
-
-			const data = await response.json();
-			const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
+			// Parse output (works for both Groq and Gemini)
 			let newMcqs: any[] = [];
 			try {
-				newMcqs = JSON.parse(rawText);
+				newMcqs = parseGroqJson(rawText);
 			} catch (parseErr) {
-				try {
-					const { jsonrepair } = require("jsonrepair");
-					newMcqs = JSON.parse(jsonrepair(rawText));
-				} catch (repairErr) {
-					const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
-					const matches = [...rawText.matchAll(pattern)];
+				// Fallback: try regex parsing
+				const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
+				const matches = [...rawText.matchAll(pattern)];
+				
+				for (const m of matches) {
+					const options = m[2].split(",").map((s: any) => 
+						s.trim().replace(/^"|"$/g, "")
+					);
 					
-					for (const m of matches) {
-						const options = m[2].split(",").map((s: any) => 
-							s.trim().replace(/^"|"$/g, "")
-						);
-						
-						if (options.length === 4) {
-							newMcqs.push({
-								question: m[1],
-								options,
-								answer: m[3],
-								explanation: m[4],
-							});
-						}
+					if (options.length === 4) {
+						newMcqs.push({
+							question: m[1],
+							options,
+							answer: m[3],
+							explanation: m[4],
+						});
 					}
 				}
 			}

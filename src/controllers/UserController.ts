@@ -526,8 +526,13 @@ const resetPassword = asyncWrapper(async (req, res, next) => {
 		user.refreshtoken = undefined; // invalidate sessions
 		await user.save();
 
+		// Generate new tokens
+		const { accessToken, refreshToken } = generateTokens(user);
+		user.refreshtoken = await hash(refreshToken);
+		await user.save();
+
 		return res.status(200).json({
-			success: true,
+			...createUserResponse(user, accessToken, refreshToken),
 			message: "Password reset successfully"
 		});
 	} catch (error) {

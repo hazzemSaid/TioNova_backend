@@ -1,6 +1,5 @@
-import fetch from 'node-fetch'; // Kept as provided, assuming your environment requires it
+import fetch from 'node-fetch';
 
-// Get API key - will be called after dotenv.config()
 function getApiKey(): string {
    const key = process.env.API_KEY_GEMINI;
    if (!key) {
@@ -9,174 +8,96 @@ function getApiKey(): string {
    return key;
 }
 
-// Build a robust list of candidate endpoints across API versions and model id variants.
-function buildStaticCandidateEndpoints(): string[] {
+function buildPrimaryEndpoints(): string[] {
    const apiKey = getApiKey();
-   // Prefer v1beta which commonly supports generateContent for 1.5/2.5 models
-   const apiVersions = ['v1beta', 'v1'];
-   const modelIds = [
-      // PRIORITY FREE TIER MODEL (Recommended for generous limits and high speed)
-      'gemini-2.5-flash', 
-      
-      // 1.5 Flash models (also excellent free-tier options)
-      'gemini-1.5-flash',
-      'gemini-1.5-flash-001',
-      'gemini-1.5-flash-002',
-      'gemini-1.5-flash-8b',
-      
-      // Legacy models (also often free-tier)
-      'gemini-pro',
-      'gemini-1.0-pro',
-      
-      // 1.5 Pro models (Use after all Flash options are exhausted)
-      'gemini-1.5-pro',
-      'gemini-1.5-pro-001',
-      'gemini-1.5-pro-002',
-      
-      // Other 2.5 models (Highest cost/strictest free tier limits, use only as last resort)
-      'gemini-2.5-pro',
-
-      // Latest models (dynamic pointers)
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-pro-latest',
+   const baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
+   return [
+      `${baseUrl}/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `${baseUrl}/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      `${baseUrl}/gemini-1.5-flash-8b:generateContent?key=${apiKey}`,
+      `${baseUrl}/gemini-1.5-pro:generateContent?key=${apiKey}`,
    ];
-   const urls: string[] = [];
-   for (const ver of apiVersions) {
-      for (const model of modelIds) {
-         urls.push(`https://generativelanguage.googleapis.com/${ver}/models/${model}:generateContent?key=${apiKey}`);
-      }
-   }
-   return urls;
 }
 
-let candidateEndpoints: string[] | null = null;
+let primaryEndpoints: string[] | null = null;
+let lastWorkingEndpointIndex = 0;
 
 function ensureEndpointsInitialized(): void {
-   if (!candidateEndpoints) {
-      candidateEndpoints = buildStaticCandidateEndpoints();
+   if (!primaryEndpoints) {
+      primaryEndpoints = buildPrimaryEndpoints();
    }
 }
 
-async function refreshCandidateEndpointsFromListModels(): Promise<void> {
-   const apiKey = getApiKey();
-   const discovered: string[] = [];
-   // Prefer v1beta, then v1
-   const versionsToTry = ['v1beta', 'v1'];
-   for (const ver of versionsToTry) {
-      try {
-         const listUrl = `https://generativelanguage.googleapis.com/${ver}/models?key=${apiKey}`;
-         const res = await fetch(listUrl);
-         if (!res.ok) {
-            continue;
-         }
-         const json = await res.json();
-         const models: any[] = Array.isArray(json?.models) ? json.models : [];
-         for (const m of models) {
-            const name: string = m?.name || '';
-            // Check includes 2.5, 1.5, or 1.0/pro models
-            const isDesired = name.includes('gemini-2.5') || name.includes('gemini-1.5') || name.includes('gemini-pro') || name.includes('gemini-1.0-pro');
-            const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
-            const supportsGenerate = methods.length === 0 || methods.includes('generateContent');
-            if (name.startsWith('models/') && isDesired && supportsGenerate) {
-               discovered.push(`https://generativelanguage.googleapis.com/${ver}/${name}:generateContent?key=${apiKey}`);
-            }
-         }
-      } catch {}
-   }
-   if (discovered.length > 0) {
-      candidateEndpoints = discovered;
-   } else {
-      // No models discovered; log what the API returned for troubleshooting
-      try {
-         for (const ver of versionsToTry) {
-            const listUrl = `https://generativelanguage.googleapis.com/${ver}/models?key=${apiKey}`;
-            const res = await fetch(listUrl);
-            const json = await res.json();
-            // Intentionally log minimal but informative output
-            console.warn(`[Gemini] ListModels (${ver}) returned models summary:`, Array.isArray(json?.models) ? json.models.map((m: any) => m?.name) : json);
-         }
-      } catch {}
-   }
-}let currentModelIndex = 0;
-export async function retryGeminiApiCall(requestBody: any, maxRetries = 3, initialDelay = 1000): Promise<any> {
+export async function retryGeminiApiCall(requestBody: any, maxRetries = 2, initialDelay = 500): Promise<any> {
    let lastError;
-
-   // Ensure endpoints are initialized
    ensureEndpointsInitialized();
-
-   // Inject default generationConfig if not provided
+   
    if (!requestBody.generationConfig) {
       requestBody.generationConfig = {};
    }
    if (!requestBody.generationConfig.maxOutputTokens) {
-      requestBody.generationConfig.maxOutputTokens = 8192; // default value
+      requestBody.generationConfig.maxOutputTokens = 8192;
    }
    if (!requestBody.generationConfig.temperature) {
-      requestBody.generationConfig.temperature = 0.7; // reasonable default
+      requestBody.generationConfig.temperature = 0.7;
    }
 
-   // Try to refresh the endpoint list once before attempting calls
-   try { await refreshCandidateEndpointsFromListModels(); } catch {}
+   const endpointsToTry = [...primaryEndpoints!];
+   if (lastWorkingEndpointIndex > 0) {
+      const temp = endpointsToTry[0];
+      endpointsToTry[0] = endpointsToTry[lastWorkingEndpointIndex];
+      endpointsToTry[lastWorkingEndpointIndex] = temp;
+   }
 
-   for (let modelAttempt = 0; modelAttempt < candidateEndpoints!.length; modelAttempt++) {
-      const currentUrl = candidateEndpoints![(currentModelIndex + modelAttempt) % candidateEndpoints!.length];      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-         try {
-            const response = await fetch(currentUrl, {
-               method: 'POST',
-               headers: { 'Content-Type': 'application/json' },
-               body: JSON.stringify(requestBody)
-            });
-
-            if (!response.ok) {
-               const errorText = await response.text();
-               throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
-            }
-
-            currentModelIndex = (currentModelIndex + modelAttempt) % candidateEndpoints!.length;
-            return response;
-         } catch (error) {
-            lastError = error;
-            const errObj = error as any;
-            const isRetryableError = errObj.message && (
-               errObj.message.includes('503') ||
-               errObj.message.includes('overloaded') ||
-               errObj.message.includes('UNAVAILABLE') ||
-               errObj.message.includes('RESOURCE_EXHAUSTED') ||
-               errObj.message.includes('429')
-            );
-
-            // If we got a NOT_FOUND for this URL, try to refresh model list once
-            const isNotFound = errObj.message && (errObj.message.includes('404') || errObj.message.includes('NOT_FOUND'));
-            if (isNotFound && attempt === 1 && modelAttempt === 0) {
-               try { await refreshCandidateEndpointsFromListModels(); } catch {}
-            }
-
-            if (attempt === maxRetries || !isRetryableError) {
-               break;
-            }
-
-            const delay = initialDelay * Math.pow(2, attempt - 1);
-            await new Promise(resolve => setTimeout(resolve, delay));
-         }
-      }
-   }
-   throw lastError;
+   for (let modelAttempt = 0; modelAttempt < endpointsToTry.length; modelAttempt++) {
+      const currentUrl = endpointsToTry[modelAttempt];
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+         try {
+            const response = await fetch(currentUrl, {
+               method: 'POST',
+               headers: { 'Content-Type': 'application/json' },
+               body: JSON.stringify(requestBody)
+            });
+            if (!response.ok) {
+               const errorText = await response.text();
+               throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
+            }
+            lastWorkingEndpointIndex = primaryEndpoints!.indexOf(currentUrl);
+            return response;
+         } catch (error) {
+            lastError = error;
+            const errObj = error as any;
+            const isRetryableError = errObj.message && (
+               errObj.message.includes('503') ||
+               errObj.message.includes('overloaded') ||
+               errObj.message.includes('UNAVAILABLE') ||
+               errObj.message.includes('RESOURCE_EXHAUSTED') ||
+               errObj.message.includes('429')
+            );
+            if (attempt === maxRetries || !isRetryableError) {
+               break;
+            }
+            const delay = initialDelay * Math.pow(1.5, attempt - 1);
+            await new Promise(resolve => setTimeout(resolve, delay));
+         }
+      }
+   }
+   throw lastError || new Error('All Gemini API endpoints failed');
 }
 
-
 export function getMimeType(filename: string, detectedMimeType?: string): string {
-   const ext = filename.split('.').pop()?.toLowerCase() || '';
-   const mimeTypes: { [key: string]: string } = {
-      'pdf': 'application/pdf',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'png': 'image/png',
-      'gif': 'image/gif',
-      'txt': 'text/plain',
-      'csv': 'text/csv',
-      'json': 'application/json',
-      'mp4': 'video/mp4',
-      'mov': 'video/quicktime'
-   };
-   return detectedMimeType || mimeTypes[ext] || 'application/octet-stream';
+   const ext = filename.split('.').pop()?.toLowerCase() || '';
+   const mimeTypes: { [key: string]: string } = {
+      'pdf': 'application/pdf',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'txt': 'text/plain',
+      'csv': 'text/csv',
+      'json': 'application/json',
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime'
+   };
+   return detectedMimeType || mimeTypes[ext] || 'application/octet-stream';
 }

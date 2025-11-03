@@ -1,8 +1,8 @@
 import mongoose from "mongoose";
 import asyncWrapper from "../middleware/asyncwrapper";
+import ChapterModel from "../models/ChapterModel";
 import FolderModel from "../models/FolderModel";
 import UserModel from "../models/UserModel";
-import ChapterModel from "../models/ChapterModel";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
@@ -62,14 +62,19 @@ const createfolder = asyncWrapper(async (req, res, next) => {
         // Ignore SSE errors
     }
 
-    const affectedUserIds = [
-        req.user._id.toString(),
-        ...(sharedWith || []).map((id: any) => id.toString()),
-    ];
-    
-    await Promise.all(
-        affectedUserIds.map(userId => CacheHelper.invalidateUserFolders(userId))
-    );
+
+    // Invalidate all users' folder cache if public, else just affected users
+    if (folder.status === 'public') {
+        await CacheHelper.invalidateAllUsersFolders();
+    } else {
+        const affectedUserIds = [
+            req.user._id.toString(),
+            ...(sharedWith || []).map((id: any) => id.toString()),
+        ];
+        await Promise.all(
+            affectedUserIds.map(userId => CacheHelper.invalidateUserFolders(userId))
+        );
+    }
 
     res.status(200).json({
         success: true,
@@ -161,16 +166,20 @@ const updatefolder = asyncWrapper(async (req: any, res, next) => {
         // Ignore SSE errors
     }
 
-    // Invalidate cache for all affected users
-    const affectedUserIds = new Set([
-        folder.ownerId.toString(),
-        ...previousSharedWith,
-        ...(sharedWith || []).map((id: any) => id.toString()),
-    ]);
-    
-    await Promise.all(
-        Array.from(affectedUserIds).map(userId => CacheHelper.invalidateUserFolders(userId))
-    );
+
+    // Invalidate all users' folder cache if public, else just affected users
+    if (folder.status === 'public') {
+        await CacheHelper.invalidateAllUsersFolders();
+    } else {
+        const affectedUserIds = new Set([
+            folder.ownerId.toString(),
+            ...previousSharedWith,
+            ...(sharedWith || []).map((id: any) => id.toString()),
+        ]);
+        await Promise.all(
+            Array.from(affectedUserIds).map(userId => CacheHelper.invalidateUserFolders(userId))
+        );
+    }
 
     res.status(200).json({
         success: true,
@@ -186,11 +195,13 @@ const getfolders = asyncWrapper(async (req, res, next) => {
     const user = req.user;
     const userId = user._id.toString();
 
-    // ✅ Use cache helper with getOrSet pattern
+
+    // Per-user cache key: only folders visible to this user are cached under their key
+    // This ensures each user only sees their own, shared, and public folders
     const { data: folders, cached } = await CacheHelper.getOrSet(
         CacheKeys.getFoldersListKey(userId),
         async () => {
-            // Aggregate folders with chapter counts and per-folder user stats (passed/attempted)
+            // Aggregate public folders and folders owned/shared with the user
             const foldersWithChapterCount = await FolderModel.aggregate([
                 {
                     $match: {
@@ -201,9 +212,11 @@ const getfolders = asyncWrapper(async (req, res, next) => {
                                     $elemMatch: { $eq: new mongoose.Types.ObjectId(user._id) },
                                 },
                             },
+                            { status: 'public' },
                         ],
                     },
                 },
+                // ...existing code for lookups and projections...
                 {
                     $lookup: {
                         from: "chapters",
@@ -292,7 +305,6 @@ const getfolders = asyncWrapper(async (req, res, next) => {
                     },
                 },
             ]);
-
             return foldersWithChapterCount;
         },
         CacheKeys.TTL.SIX_HOURS

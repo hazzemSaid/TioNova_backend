@@ -4,6 +4,7 @@ import MindmapModel from "../models/MindmapModel";
 import NodeModel from "../models/NodeModel";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
+import { callGroqApi, extractGroqText, parseGroqJson } from "../utils/groqApi";
 
 const createMindmap = asyncWrapper(async (req, res, next) => {
     let { chapterId,regenerate }:{chapterId:string,regenerate:boolean} = req.body;
@@ -35,20 +36,15 @@ const createMindmap = asyncWrapper(async (req, res, next) => {
         }
     }
 
-    // ✅ Generate new mindmap
-    const chapterContent = chapter.overcontent || chapter.content?.toString("utf-8") || "";
+    // ✅ Generate new mindmap - use Groq if overcontent exists, otherwise fallback to Gemini
+    const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
 
-    if (!chapterContent) {
-        return next(ErrorHandler.createError("Chapter content missing", 400));
+    if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
+        return next(ErrorHandler.createError("Chapter content is missing", 400));
     }
 
-    const base64File = chapter.content?.toString("base64") || "";
-    const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-
-    // Prepare Gemini parts
-    const parts = [
-        {
-            text: `You are an expert knowledge extraction AI that **converts educational content into a structured flat mindmap JSON**.
+    // Prepare system prompt
+    const systemPrompt = `You are an expert knowledge extraction AI that **converts educational content into a structured flat mindmap JSON**.
 
 Task:
 - Carefully analyze the provided content and extract its conceptual hierarchy.
@@ -122,94 +118,65 @@ Guidelines:
 - Keep titles concise (2-5 words maximum)
 - Keep content brief and academic (1-2 sentences)
 - Never output empty nodes or arrays
-- Never output markdown, code fences, or explanations — only the JSON object
+- Never output markdown, code fences, or explanations — only the JSON object`;
 
-Now process the following content:
-${chapter.overcontent || ""}`,
-        },
-        ...(chapter.overcontent ? [] : [
-            { inlineData: { mimeType, data: base64File } }
-        ]),
-    ];
+    let rawText: string;
 
-    // ✅ Call Gemini API with proper request format
-    const response = await retryGeminiApiCall({
-        contents: [
-            {
-                role: "user",
-                parts: parts
-            }
-        ],
-        generationConfig: {
+    if (hasOvercontent) {
+        // ✅ Use Groq with extracted text (fast path)
+        const userPrompt = `Process the following content and generate a mindmap:\n\n${chapter.overcontent}`;
+
+        const response = await callGroqApi({
+            model: 'llama-3.3-70b-versatile' as const,
+            messages: [
+                { role: 'system' as const, content: systemPrompt },
+                { role: 'user' as const, content: userPrompt }
+            ],
             temperature: 0.2,
-            topP: 0.8,
-            topK: 40,
-            maxOutputTokens: 8192
+            max_tokens: 8192,
+        });
+
+        rawText = extractGroqText(response);
+    } else {
+        // ✅ Fallback to Gemini with PDF (multi-modal path)
+        console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
+        
+        const base64File = chapter.content.toString("base64");
+        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+        
+        const geminiPrompt = `${systemPrompt}\n\nProcess the content in this PDF and generate a mindmap.`;
+
+        const response = await retryGeminiApiCall({
+            contents: [{
+                parts: [
+                    { text: geminiPrompt },
+                    { inlineData: { mimeType, data: base64File } }
+                ]
+            }],
+            generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
+        });
+
+        const data = await response.json();
+        
+        if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+            return next(ErrorHandler.createError("No response from Gemini API", 500));
         }
-    });
-
-    // ✅ Extract and validate response
-    if (!response) {
-        return next(ErrorHandler.createError("No response from Gemini API", 500));
+        
+        rawText = data.candidates[0].content.parts[0].text.trim();
     }
 
-    // Parse the JSON response body
-    let responseData;
-    try {
-        responseData = await response.json();
-    } catch (error) {
-        console.error("❌ Failed to parse response JSON:", error);
-        return next(ErrorHandler.createError("Invalid JSON response from Gemini API", 500));
-    }
-
-    if (!responseData.candidates || !Array.isArray(responseData.candidates)) {
-        return next(ErrorHandler.createError("Invalid response format from Gemini API", 500));
-    }
-
-    if (responseData.candidates.length === 0) {
-        return next(ErrorHandler.createError("No content generated by Gemini API", 500));
-    }
-
-    const candidate = responseData.candidates[0];
-
-    if (candidate.finishReason === 'SAFETY') {
-        return next(ErrorHandler.createError("Content was blocked for safety reasons", 400));
-    }
-
-    if (!candidate.content?.parts?.[0]?.text) {
-        return next(ErrorHandler.createError("No text content in Gemini response", 500));
-    }
-
-    const rawText = candidate.content.parts[0].text.trim();
-
-    // Clean up markdown code fences if present
-    let cleanText = rawText;
-    if (rawText.startsWith('```json')) {
-        cleanText = rawText.replace(/```json\s*/, '').replace(/```\s*$/, '');
-    } else if (rawText.startsWith('```')) {
-        cleanText = rawText.replace(/```\s*/, '').replace(/```\s*$/, '');
-    }
-
-    // ✅ Parse JSON response
+    // ✅ Parse JSON response (works for both Groq and Gemini)
     let mindmapJson;
     try {
-        // Try direct parse first with cleaned text
-        mindmapJson = JSON.parse(cleanText);
+        mindmapJson = parseGroqJson(rawText);
     } catch (error) {
-        console.error("❌ Direct JSON parse failed, trying repair...");
-        try {
-            // Try to repair JSON if parsing fails
-            const { jsonrepair } = require("jsonrepair");
-            mindmapJson = JSON.parse(jsonrepair(cleanText));
-        } catch (repairError) {
-            console.error("❌ Failed to parse Gemini response after repair:", cleanText);
-            return next(
-                ErrorHandler.createError(
-                    "Failed to process the mindmap. Please try again.",
-                    500
-                )
-            );
-        }
+        console.error("❌ Failed to parse response:", rawText);
+        return next(
+            ErrorHandler.createError(
+                "Failed to process the mindmap. Please try again.",
+                500
+            )
+        );
     }
 
     // Validate required fields
@@ -351,27 +318,18 @@ const generatecontent = asyncWrapper(async (req, res, next) => {
         return next(ErrorHandler.createError("Chapter not found", 404));
     }
 
-    const chapterContent = chapter.overcontent || chapter.content?.toString("utf-8") || "";
-    if (!chapterContent) {
-        return next(ErrorHandler.createError("Chapter content missing", 400));
+    const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
+    
+    if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
+        return next(ErrorHandler.createError("Chapter content is missing", 400));
     }
 
-    const base64File = chapter.content?.toString("base64") || "";
-    const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-
-    // Prepare enhanced Gemini prompt
-    const parts = [
-        {
-            text: `You are an expert educational content generator that creates concise, structured notes based on user input and chapter content.
-
-Task:
-- Analyze the user's text input: "${text}"
-- Extract the main ideas from the provided chapter content
-- Generate brief, well-structured smart notes
+    // Prepare system prompt
+    const systemPrompt = `You are an expert educational content generator that creates concise, structured notes based on user input and chapter content.
 
 Format Requirements:
 - Start EACH point with a dash and space: "- "
-- Format: "- First point content -Second point content - Third point content"
+- Format: "- First point content\\n- Second point content\\n- Third point content"
 - All points should be on separate lines
 - Example format:
   - First main idea here (1-2 sentences)
@@ -380,69 +338,68 @@ Format Requirements:
 
 Guidelines:
 - Keep ALL content brief and academic (1-2 sentences per point maximum)
-- Focus only on "${text}" - stay relevant and concise
+- Focus only on the user's topic - stay relevant and concise
 - Maintain academic tone with clear, direct language
 - Provide 3-5 main points ONLY
 - Each point should be 1-2 sentences maximum
 - Be extremely concise - no lengthy explanations
-- Return ONLY the generated notes (no meta-commentary or introductions)
+- Return ONLY the generated notes (no meta-commentary or introductions)`;
+
+    let generatedContent: string;
+
+    if (hasOvercontent) {
+        // ✅ Use Groq with extracted text (fast path)
+        const userPrompt = `User's topic: "${text}"
 
 Chapter content to analyze:
-${chapter.overcontent || ""}`,
-        },
-        ...(chapter.overcontent ? [] : [
-            { inlineData: { mimeType, data: base64File } }
-        ]),
-    ];
+${chapter.overcontent}
 
-    // Call Gemini API
-    const response = await retryGeminiApiCall({
-        contents: [
-            {
-                role: "user",
-                parts: parts
-            }
-        ],
-        generationConfig: {
+Generate smart notes about "${text}" based on the chapter content above.`;
+
+        const response = await callGroqApi({
+            model: 'llama-3.3-70b-versatile' as const,
+            messages: [
+                { role: 'system' as const, content: systemPrompt },
+                { role: 'user' as const, content: userPrompt }
+            ],
             temperature: 0.4,
-            topP: 0.9,
-            topK: 40,
-            maxOutputTokens: 8192
+            max_tokens: 1024,
+        });
+
+        generatedContent = extractGroqText(response);
+    } else {
+        // ✅ Fallback to Gemini with PDF (multi-modal path)
+        console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
+        
+        const base64File = chapter.content.toString("base64");
+        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+        
+        const geminiPrompt = `${systemPrompt}
+
+User's topic: "${text}"
+
+Chapter content is in the attached PDF.
+
+Generate smart notes about "${text}" based on the chapter content in the PDF.`;
+
+        const response = await retryGeminiApiCall({
+            contents: [{
+                parts: [
+                    { text: geminiPrompt },
+                    { inlineData: { mimeType, data: base64File } }
+                ]
+            }],
+            generationConfig: { temperature: 0.4, maxOutputTokens: 1024 }
+        });
+
+        const data = await response.json();
+        
+        if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+            return next(ErrorHandler.createError("No response from Gemini API", 500));
         }
-    });
-
-    // Validate response
-    if (!response) {
-        return next(ErrorHandler.createError("No response from Gemini API", 500));
+        
+        generatedContent = data.candidates[0].content.parts[0].text.trim();
     }
-
-    // Parse response data
-    let responseData;
-    try {
-        responseData = await response.json();
-    } catch (error) {
-        console.error("❌ Failed to parse Gemini response:", error);
-        return next(ErrorHandler.createError("Invalid response from Gemini API", 500));
-    }
-
-    // Validate response structure
-    if (!responseData.candidates || !Array.isArray(responseData.candidates) || responseData.candidates.length === 0) {
-        return next(ErrorHandler.createError("No content generated by Gemini API", 500));
-    }
-
-    const candidate = responseData.candidates[0];
-
-    // Check for safety blocks
-    if (candidate.finishReason === 'SAFETY') {
-        return next(ErrorHandler.createError("Content was blocked for safety reasons", 400));
-    }
-
-    // Extract generated content
-    if (!candidate.content?.parts?.[0]?.text) {
-        return next(ErrorHandler.createError("No text content in Gemini response", 500));
-    }
-
-    const generatedContent = candidate.content.parts[0].text.trim();
 
     return res.status(200).json({
         success: true,

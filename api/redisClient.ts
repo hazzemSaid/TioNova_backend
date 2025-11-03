@@ -3,7 +3,7 @@ import { Redis } from "@upstash/redis";
 let redisClient: Redis | null = null;
 
 // Lazy load Redis client only when needed
-function getRedisClient(): Redis {
+export function getRedisClient(): Redis {
   if (!redisClient) {
     if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
       throw new Error(

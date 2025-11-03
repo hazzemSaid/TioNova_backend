@@ -39,10 +39,12 @@ export interface IChallengeResult extends Document {
   createdAt: Date;
   startedAt?: Date;
   completedAt?: Date;
+  isPrivate?: boolean;
 }
 
 const ChallengeResultSchema = new Schema<IChallengeResult>(
   {
+    isPrivate: { type: Boolean, default: false },
     challengeCode: { type: String, required: true, unique: true, index: true },
     owner: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     quizId: { type: Schema.Types.ObjectId, ref: 'Quiz', required: true },

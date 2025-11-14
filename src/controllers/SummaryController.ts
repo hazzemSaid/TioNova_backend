@@ -7,7 +7,6 @@ import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
-import { callGroqApi, extractGroqText, parseGroqJson } from "../utils/groqApi";
 
 const summarizecchapter = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -103,60 +102,44 @@ Guidelines:
 
     let summaryJson;
 
+    // Use Gemini API for both overcontent (text) and PDF (inline) paths
+    const base64File = chapter.content ? chapter.content.toString("base64") : "";
+    const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+
+    let geminiPrompt: string;
     if (hasOvercontent) {
-        // ✅ Use Groq with extracted text (fast path)
-        const userPrompt = `Generate the JSON summary for this chapter content:\n\n${chapter.overcontent}`;
-
-        const requestBody = {
-            model: 'llama-3.3-70b-versatile' as const,
-            messages: [
-                { role: 'system' as const, content: systemPrompt },
-                { role: 'user' as const, content: userPrompt }
-            ],
-            temperature: 0.5,
-            max_tokens: 8192,
-        };
-
-        const response = await callGroqApi(requestBody);
-        const rawText = extractGroqText(response);
-        
-        try {
-            summaryJson = parseGroqJson(rawText);
-        } catch (err) {
-            return next(ErrorHandler.createError("Invalid JSON response from Groq API", 400, err));
-        }
+        geminiPrompt = `${systemPrompt}\n\nGenerate the JSON summary for this chapter content:\n\n${chapter.overcontent}`;
     } else {
-        // ✅ Fallback to Gemini with PDF (multi-modal path)
-        console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
-        
-        const base64File = chapter.content.toString("base64");
-        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-        
-        const geminiPrompt = `${systemPrompt}\n\nNow generate the JSON summary for the chapter content in this PDF.`;
+        geminiPrompt = `${systemPrompt}\n\nNow generate the JSON summary for the chapter content in this PDF.`;
+    }
 
-        const requestBody = {
-            contents: [{
-                parts: [
-                    { text: geminiPrompt },
-                    { inlineData: { mimeType, data: base64File } }
-                ]
-            }],
-            generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
-        };
+    const requestBody: any = {
+        contents: [
+            {
+                parts: hasOvercontent
+                    ? [{ text: geminiPrompt }]
+                    : [
+                          { text: geminiPrompt },
+                          { inlineData: { mimeType, data: base64File } },
+                      ],
+            },
+        ],
+        generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
+    };
 
-        const response = await retryGeminiApiCall(requestBody);
-        const data = await response.json();
-        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        
+    const response = await retryGeminiApiCall(requestBody);
+    const data = await response.json();
+    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    // Try JSON.parse first, then attempt repair if needed
+    try {
+        summaryJson = JSON.parse(rawText);
+    } catch {
         try {
-            summaryJson = JSON.parse(rawText);
-        } catch {
-            try {
-                const { jsonrepair } = require("jsonrepair");
-                summaryJson = JSON.parse(jsonrepair(rawText));
-            } catch (err) {
-                return next(ErrorHandler.createError("Invalid JSON response from Gemini API", 400));
-            }
+            const { jsonrepair } = require("jsonrepair");
+            summaryJson = JSON.parse(jsonrepair(rawText));
+        } catch (err) {
+            return next(ErrorHandler.createError("Invalid JSON response from Gemini API", 400));
         }
     }
 
@@ -183,12 +166,19 @@ Guidelines:
         console.error("Error updating analysis/profile:", e);
     }
 
+    // Get updated profile with new streak
+    const updatedProfile = await ProfileService.getProfile(user._id.toString());
+
     return res.status(200).json({
         success: true,
         message: "Chapter summarized successfully",
         summary: summaryJson,
         summaryModel,
         cached: false,
+        profile: {
+            streak: updatedProfile?.streak || 0,
+            totalSummariesCreated: updatedProfile?.totalSummariesCreated || 0
+        }
     });
 });
 

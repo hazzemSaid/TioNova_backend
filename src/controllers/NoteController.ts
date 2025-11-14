@@ -29,7 +29,7 @@ const getNotesByChapterId = asyncWrapper(async (req, res, next) => {
 		.sort({ createdAt: -1 });
 
 	res.status(200).json({
-		status: "success",
+		success: true,
 		data: {
 			notes,
 			count: notes.length
@@ -76,7 +76,7 @@ const addTextNote = asyncWrapper(async (req, res, next) => {
 	await note.populate('createdBy', 'name email');
 
 	res.status(201).json({
-		status: "success",
+		success: true,
 		data: { note }
 	});
 });
@@ -136,7 +136,7 @@ const addImageNote = asyncWrapper(async (req, res, next) => {
 	await note.populate('createdBy', 'name email');
 
 	res.status(201).json({
-		status: "success",
+		success: true,
 		data: { note }
 	});
 });
@@ -195,7 +195,7 @@ const addVoiceNote = asyncWrapper(async (req, res, next) => {
 	await note.populate('createdBy', 'name email');
 
 	res.status(201).json({
-		status: "success",
+		success: true,
 		data: { note }
 	});
 });
@@ -243,7 +243,7 @@ const deleteNote = asyncWrapper(async (req, res, next) => {
 	await NoteModel.findByIdAndDelete(noteId);
 
 	res.status(200).json({
-		status: "success",
+		success: true,
 		message: "Note deleted successfully"
 	});
 });

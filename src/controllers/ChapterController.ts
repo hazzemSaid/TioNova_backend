@@ -5,11 +5,11 @@ import FolderModel from "../models/FolderModel";
 // Queue not used in this path; background extraction runs inline after responding
 // import { chapterQueue } from "../queues/chapterQueue";
 import { AnalysisService } from "../services/analysisService";
-import { ProfileService } from "../services/profileService";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
 import { retryGeminiApiCall } from "../utils/geminiApi";
+import { sendEventToUser } from "./sseController";
 
 const createchapter = asyncWrapper(async (req, res, next) => {
     const { folderId, title, description, category } = req.body;
@@ -28,17 +28,20 @@ const createchapter = asyncWrapper(async (req, res, next) => {
         return next(ErrorHandler.createError("PDF file is required", 400));
     }
 
-    const chapter = await ChapterModel.create({
-        content: file.buffer,
-        contentType: file.mimetype,
-        createdBy: req.user._id,
-        updatedBy: req.user._id,
-        folderId,
-        overcontent: null,
-        title,
-        description,
-        category,
-    });
+    // We'll create the Chapter document after extraction finishes so the model
+    // is persisted at the end of the process (avoids storing partial/empty overcontent)
+    let chapter: any = null;
+    let updatedChapter: any = null;
+
+    // SSE: notify client that work started (0%)
+    try {
+        sendEventToUser(req.user._id.toString(), {
+            progress: 0,
+            message: "Chapter upload received, starting processing",
+        });
+    } catch (e) {
+        console.warn("SSE: failed to send 0% event", e);
+    }
 
     // ✅ Extract content synchronously - user waits for completion
     try {
@@ -73,21 +76,46 @@ const createchapter = asyncWrapper(async (req, res, next) => {
             generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
         } as any;
 
+        // SSE: starting extraction (25%)
+        try {
+            sendEventToUser(req.user._id.toString(), {
+                progress: 25,
+                message: "Starting content extraction",
+            });
+        } catch (e) {
+            console.warn("SSE: failed to send 25% event", e);
+        }
+
         const response = await retryGeminiApiCall(requestBody);
         const data = await response.json();
 
+        // SSE: received response from extraction service (50%)
+        try {
+            sendEventToUser(req.user._id.toString(), {
+                progress: 50,
+                message: "Extraction service responded",
+            });
+        } catch (e) {
+            console.warn("SSE: failed to send 50% event", e);
+        }
+
         const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined;
 
-        if (extractedText) {
-            await ChapterModel.findByIdAndUpdate(
-                chapter._id,
-                {
-                    overcontent: extractedText,
-                    updatedBy: req.user._id,
-                },
-                { new: true }
-            );
+        // Create chapter record now that extraction finished (or failed)
+        chapter = await ChapterModel.create({
+            content: file.buffer,
+            contentType: file.mimetype,
+            createdBy: req.user._id,
+            updatedBy: req.user._id,
+            folderId,
+            overcontent: extractedText || null,
+            title,
+            description,
+            category,
+        });
 
+        // If we got extracted text, cache it and invalidate related caches
+        if (extractedText) {
             // Cache the extracted content
             const overcontentKey = CacheKeys.getChapterOverContentKey(chapter._id.toString());
             await CacheHelper.set(overcontentKey, extractedText, CacheKeys.TTL.ONE_WEEK);
@@ -104,31 +132,75 @@ const createchapter = asyncWrapper(async (req, res, next) => {
             await CacheHelper.delete(contentKey);
 
             console.log(`✅ [Chapter ${chapter._id}] Content extraction completed (${extractedText.length} chars)`);
+
+            // SSE: extraction and cache update done (75%)
+            try {
+                sendEventToUser(req.user._id.toString(), {
+                    chapterId: chapter._id.toString(),
+                    progress: 75,
+                    message: "Content extraction and cache update completed",
+                });
+            } catch (e) {
+                console.warn("SSE: failed to send 75% event", e);
+            }
         } else {
-            console.warn(`⚠️ [Chapter ${chapter._id}] No text extracted from Gemini API`);
+            console.warn(`⚠️ [Chapter temporary] No text extracted from Gemini API`);
         }
+        
     } catch (e) {
-        console.error(`❌ [Chapter ${chapter._id}] Content extraction failed:`, e);
-        // Don't fail the request, chapter is created but without overcontent
+        console.error("❌ Content extraction failed:", e);
+        // Don't fail the request, chapter may be created without overcontent
     }
 
     // ✅ Update analysis: recent chapters and increment total chapters
     try {
         await AnalysisService.updateRecentChapters(req.user._id.toString(), chapter._id.toString());
         await AnalysisService.updateRecentFolders(req.user._id.toString(), folderId);
+        // SSE: all post-processing done (100%)
+        try {
+            // Prefer the updated chapter if available (includes overcontent)
+            const finalChapter = updatedChapter || chapter;
+
+            // Include a small preview and a flag rather than the full overcontent to avoid huge SSE payloads
+            const hasOvercontent = !!(finalChapter && finalChapter.overcontent);
+            const overcontentPreview = hasOvercontent
+                ? String(finalChapter.overcontent).slice(0, 2000)
+                : null;
+
+            sendEventToUser(req.user._id.toString(), {
+                chapterId: finalChapter._id.toString(),
+                progress: 100,
+                message: "Chapter processing completed",
+                chapter: {
+                    _id: finalChapter._id,
+                    title: finalChapter.title,
+                    description: finalChapter.description,
+                    folderId: finalChapter.folderId,
+                    createdBy: finalChapter.createdBy,
+                    createdAt: finalChapter.createdAt,
+                    contentType: finalChapter.contentType,
+                    hasOvercontent,
+                    overcontentPreview,
+                },
+            });
+        } catch (e) {
+            console.warn("SSE: failed to send 100% event", e);
+        }
     } catch (e) {
         console.error("Error updating analysis:", e);
     }
 
     // Return chapter data without content buffer
+    // Use updatedChapter if present so the HTTP response reflects the extracted content
+    const finalResponseChapter = (typeof updatedChapter !== 'undefined' && updatedChapter) ? updatedChapter : chapter;
     const chapterResponse = {
-        _id: chapter._id,
-        title: chapter.title,
-        description: chapter.description,
-        folderId: chapter.folderId,
-        createdBy: chapter.createdBy,
-        createdAt: chapter.createdAt,
-        contentType: chapter.contentType,
+        _id: finalResponseChapter._id,
+        title: finalResponseChapter.title,
+        description: finalResponseChapter.description,
+        folderId: finalResponseChapter.folderId,
+        createdBy: finalResponseChapter.createdBy,
+        createdAt: finalResponseChapter.createdAt,
+        contentType: finalResponseChapter.contentType,
     };
 
     res.status(200).json({
@@ -214,13 +286,6 @@ const getchaptercontent = asyncWrapper(async (req, res, next) => {
     const cachedContent = await CacheHelper.getCachedChapterContent(chapterId);
 
     if (cachedContent) {
-        // ✅ Update streak when user accesses content
-        try {
-            await ProfileService.updateStreak(userId.toString());
-        } catch (e) {
-            console.error("Error updating streak:", e);
-        }
-
         return res.status(200).json({
             success: true,
             message: "Chapter content retrieved from cache",
@@ -236,13 +301,6 @@ const getchaptercontent = asyncWrapper(async (req, res, next) => {
         chapter.content,
         CacheKeys.TTL.ONE_WEEK
     );
-
-    // ✅ Update streak when user accesses content
-    try {
-        await ProfileService.updateStreak(userId.toString());
-    } catch (e) {
-        console.error("Error updating streak:", e);
-    }
 
     res.status(200).json({
         success: true,

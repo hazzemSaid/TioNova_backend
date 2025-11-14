@@ -14,10 +14,9 @@ const limiter =(limit : number) => rateLimit({
 	}
 	,
 	message: {
-		status: "error",
+		success: false,
 		error: "Too many requests, please try again later.",
-		statuscode: 429,
-		data: "no data",
+		statusCode: 429,
 	},
 });
 

@@ -252,10 +252,17 @@ Guidelines:
         console.error("Error updating analysis/profile:", e);
     }
 
+    // Get updated profile with new streak
+    const updatedProfile = await ProfileService.getProfile(user._id.toString());
+
     return res.status(200).json({
         success: true,
         message: "Mindmap created successfully",
         data: mindmapModel,
+        profile: {
+            streak: updatedProfile?.streak || 0,
+            totalMindmapsCreated: updatedProfile?.totalMindmapsCreated || 0
+        }
     });
 });
 const saveMindmap = asyncWrapper(async (req, res, next) => {

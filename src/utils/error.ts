@@ -3,6 +3,12 @@ export interface ICustomError extends Error {
   data?: any;
 }
 
+/**
+ * Custom Error Handler class that creates errors following the standardized format:
+ * { success: false, error: string, statusCode: number }
+ * 
+ * When thrown, the error middleware will format it properly.
+ */
 class ErrorHandler extends Error {
   statuscode: number;
   data: any;

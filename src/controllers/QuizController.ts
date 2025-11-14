@@ -10,7 +10,6 @@ import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
-import { callGroqApi, extractGroqText, parseGroqJson } from "../utils/groqApi";
 
 const createquiz = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -107,50 +106,37 @@ Output Format (JSON array only, no additional text):
 
             let rawText: string;
 
+            // ✅ Use Gemini API for all content types
+            const base64File = chapter.content.toString("base64");
+            const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+            
+            let geminiPrompt: string;
             if (hasOvercontent) {
-                // ✅ Use Groq with extracted text (fast path)
-                const userPrompt = `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
-
-                const requestBody = {
-                    model: 'llama-3.3-70b-versatile' as const,
-                    messages: [
-                        { role: 'system' as const, content: systemPrompt },
-                        { role: 'user' as const, content: userPrompt }
-                    ],
-                    temperature: 0.7,
-                    max_tokens: 8192,
-                };
-
-                const response = await callGroqApi(requestBody);
-                rawText = extractGroqText(response);
+                geminiPrompt = `${systemPrompt}\n\nChapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
             } else {
-                // ✅ Fallback to Gemini with PDF (multi-modal path)
-                console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
-                
-                const base64File = chapter.content.toString("base64");
-                const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-                
-                const geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
+                geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
+            }
 
-                const requestBody = {
-                    contents: [{
-                        parts: [
+            const requestBody = {
+                contents: [{
+                    parts: hasOvercontent 
+                        ? [{ text: geminiPrompt }]
+                        : [
                             { text: geminiPrompt },
                             { inlineData: { mimeType, data: base64File } }
                         ]
-                    }],
-                    generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
-                };
+                }],
+                generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+            };
 
-                const response = await retryGeminiApiCall(requestBody);
-                const data = await response.json();
-                rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-            }
+            const response = await retryGeminiApiCall(requestBody);
+            const data = await response.json();
+            rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-            // Parse output (works for both Groq and Gemini)
+            // Parse output
             let newMcqs: any[] = [];
             try {
-                newMcqs = parseGroqJson(rawText);
+                newMcqs = JSON.parse(rawText);
             } catch {
                 // Fallback: try regex parsing
                 const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
@@ -231,9 +217,9 @@ Output Format (JSON array only, no additional text):
             quiz = await QuizModel.findById(quizId);
         }
 
-        // ✅ Randomly pick 15 questions
+        // ✅ Randomly pick 40 questions
         const shuffled = [...cachedQuestions].sort(() => 0.5 - Math.random());
-        const questionsToReturn = shuffled.slice(0, 15).map((q) => ({
+        const questionsToReturn = shuffled.slice(0, 40).map((q) => ({
             _id: q._id,
             question: q.question,
             options: q.options,
@@ -372,9 +358,10 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
         });
     }
 
-    const totalQuestions = questions.length;
+    // Calculate score based on answered questions, not total questions in quiz
+    const totalAnswered = gradedAnswers.length;
     const scorePercent =
-        totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+        totalAnswered > 0 ? Math.round((correctCount / totalAnswered) * 100) : 0;
     const passThreshold = 70;
     const status = scorePercent >= passThreshold ? "Passed" : "Failed";
 
@@ -405,6 +392,9 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
         console.error("Error updating analysis/profile:", e);
     }
 
+    // Get updated profile with new streak
+    const updatedProfile = await ProfileService.getProfile(userId.toString());
+
     return res.status(200).json({
         success: true,
         message: "Quiz graded successfully",
@@ -416,6 +406,11 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
             gradedAnswers,
         },
         userQuizStatus,
+        profile: {
+            streak: updatedProfile?.streak || 0,
+            totalQuizzesTaken: updatedProfile?.totalQuizzesTaken || 0,
+            averageQuizScore: updatedProfile?.averageQuizScore || 0
+        }
     });
 });
 

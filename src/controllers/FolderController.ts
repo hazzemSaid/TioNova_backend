@@ -228,8 +228,11 @@ const getfolders = asyncWrapper(async (req, res, next) => {
                 {
                     $lookup: {
                         from: "chapters",
-                        localField: "_id",
-                        foreignField: "folderId",
+                        let: { folderId: "$_id" },
+                        pipeline: [
+                            { $match: { $expr: { $eq: ["$folderId", "$$folderId"] } } },
+                            { $project: { _id: 1 } }
+                        ],
                         as: "chapters",
                     },
                 },

@@ -1,56 +1,66 @@
-// controller/sseController.js
+import { Request, Response } from "express";
 
-// ⬅️ مصفوفة لتخزين كل كلاينت مع الـ ID بتاعه
-let clients: any[] = [];
-
-// ✅ دالة جديدة: تبعت بيانات لـ user معين
-const sendEventToUser = (userId: string, data: any) => {
-	// 1. ابحث عن الكلاينت المطلوب في المصفوفة
-	const userClient = clients.find(c => c.id === userId);
-
-	// 2. لو لقيته، ابعتله البيانات
-	if (userClient) {
-		userClient.client.write(`data: ${JSON.stringify(data)}\n\n`);
-		console.log(`Sent event to user: ${userId}`);
-		return true; // تم الإرسال بنجاح
-	}
-
-	console.log(`User not found or disconnected: ${userId}`);
-	return false; // الكلاينت مش موجود
+type SSEClient = {
+	id: string; // user id
+	connId: string; // unique connection id for this response stream
+	res: Response;
 };
 
-// دالة الاتصال الرئيسية (streamUpdates) بعد التعديل
-const streamUpdates = (req: any, res: any) => {
-	// 1️⃣ الخطوة الأولى: إعداد الهيدرز كالعادة
-	res.setHeader('Content-Type', 'text/event-stream');
-	res.setHeader('Cache-Control', 'no-cache');
-	res.setHeader('Connection', 'keep-alive');
-	res.flushHeaders();
+let clients: SSEClient[] = [];
 
-	// 2️⃣ الخطوة الثانية: اقرأ الـ ID من الرابط
-	const { userId } = req.query;
+export const sendEventToUser = (userId: string, data: any): boolean => {
+	const userClients = clients.filter((c) => c.id === userId);
+	if (userClients.length === 0) {
+		console.log(`SSE: User not connected: ${userId}`);
+		return false;
+	}
+
+	let sent = 0;
+	userClients.forEach((userClient) => {
+		try {
+			userClient.res.write(`data: ${JSON.stringify(data)}\n\n`);
+			sent++;
+		} catch (e) {
+			console.error(`SSE: Failed to send event to ${userId} (conn ${userClient.connId})`, e);
+		}
+	});
+
+	console.log(`SSE: Sent event to user: ${userId} (${sent}/${userClients.length} connections)`);
+	return sent > 0;
+};
+
+export const streamUpdates = (req: Request, res: Response) => {
+	res.setHeader("Content-Type", "text/event-stream");
+	res.setHeader("Cache-Control", "no-cache");
+	res.setHeader("Connection", "keep-alive");
+
+	// flushHeaders may not exist on all Response objects in certain setups
+	// @ts-ignore
+	if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+	const userId = String(req.query.userId || req.query.user);
 	if (!userId) {
-		// لو مفيش ID، اقفل الاتصال
 		res.write('data: {"error": "userId is required"}\n\n');
 		return res.end();
 	}
 
-	// 3️⃣ الخطوة الثالثة: خزّن الكلاينت الجديد مع الـ ID بتاعه
-	const newClient = {
-		id: userId,
-		client: res,
-	};
+	// create a unique connection id for this stream so we can remove only this connection on close
+	const connId = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+	const newClient: SSEClient = { id: userId, connId, res };
 	clients.push(newClient);
-	console.log(`New client connected: ${userId}. Total clients: ${clients.length}`);
+	console.log(`SSE: New client connected: ${userId} (conn ${connId}). Total clients: ${clients.length}`);
 
-	// 4️⃣ الخطوة الرابعة: لما الاتصال يتقفل، امسحه من المصفوفة
-	req.on('close', () => {
-		clients = clients.filter(c => c.id !== userId);
-		console.log(`Client disconnected: ${userId}. Total clients: ${clients.length}`);
+	// Send an initial handshake event
+	res.write(`data: ${JSON.stringify({ message: "connected", userId })}\n\n`);
+
+	req.on("close", () => {
+		// remove only this connection (by connId) so other open tabs/devices for the same user remain connected
+		clients = clients.filter((c) => c.connId !== connId);
+		console.log(`SSE: Client disconnected: ${userId} (conn ${connId}). Total clients: ${clients.length}`);
 	});
 };
 
-module.exports = {
+export default {
 	streamUpdates,
-	sendEventToUser, // عملنا export للدالة الجديدة
+	sendEventToUser,
 };

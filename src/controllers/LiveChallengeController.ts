@@ -7,6 +7,7 @@ import ChapterModel from '../models/ChapterModel';
 import QuestionModel from '../models/QuestionModel';
 import QuizModel from '../models/QuizModel';
 import { ProfileService } from '../services/profileService';
+import ErrorHandler from '../utils/error';
 import { admin } from '../utils/firebase';
 import { getMimeType, retryGeminiApiCall } from '../utils/geminiApi';
 import { callGroqApi, extractGroqText, parseGroqJson } from '../utils/groqApi';
@@ -61,7 +62,9 @@ const markUnansweredParticipants = async (challengeCode: string, questionIndex: 
 
 const getQuizQuestionsWithAnswers = async (quizId: string) => {
 	const quiz = await QuizModel.findById(quizId);
-	if (!quiz) throw new Error('Quiz not found');
+	if (!quiz) {
+		throw ErrorHandler.createError('Quiz not found', 404);
+	}
 
 	const ids = quiz.questions.map((q: any) => new mongoose.Types.ObjectId(q));
 	const docs = await QuestionModel.find({ _id: { $in: ids } });
@@ -79,20 +82,20 @@ export const createLiveChallenge = async (req: any, res: Response) => {
 		const ownerId = req.user._id?.toString();
 		const username = req.user.username || 'Owner';
 		const { chapterId } = req.body || {};
-		if (!ownerId) return res.status(401).json({ message: 'Unauthorized' });
-		if (!chapterId || !isValidObjectId(chapterId)) return res.status(400).json({ message: 'Valid chapterId required' });
+		if (!ownerId) return res.status(401).json({ success: false, error: 'Unauthorized', statusCode: 401 });
+		if (!chapterId || !isValidObjectId(chapterId)) return res.status(400).json({ success: false, error: 'Valid chapterId required', statusCode: 400 });
 
 		let quiz = await QuizModel.findOne({ chapterId });
 		let targetQuizId: string;
 
 		if (!quiz) {
 			const chapter = await ChapterModel.findById(chapterId);
-			if (!chapter) return res.status(404).json({ message: 'Chapter not found' });
+			if (!chapter) return res.status(404).json({ success: false, error: 'Chapter not found', statusCode: 404 });
 			
 			const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
 			
 			if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
-				return res.status(400).json({ message: 'Chapter content is missing' });
+				return res.status(400).json({ success: false, error: 'Chapter content is missing', statusCode: 400 });
 			}
 
 			const needed = 50;
@@ -142,7 +145,7 @@ Output Format (JSON array only, no additional text):
 					rawText = extractGroqText(response);
 				} catch (apiErr) {
 					console.error('Groq API error:', apiErr);
-					return res.status(500).json({ message: 'Failed to generate quiz questions' });
+					return res.status(500).json({ success: false, error: 'Failed to generate quiz questions', statusCode: 500 });
 				}
 			} else {
 				// ✅ Fallback to Gemini with PDF (multi-modal path)
@@ -167,7 +170,7 @@ Output Format (JSON array only, no additional text):
 					rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 				} catch (apiErr) {
 					console.error('Gemini API error:', apiErr);
-					return res.status(500).json({ message: 'Failed to generate quiz questions' });
+					return res.status(500).json({ success: false, error: 'Failed to generate quiz questions', statusCode: 500 });
 				}
 			}
 
@@ -205,7 +208,7 @@ Output Format (JSON array only, no additional text):
 			).slice(0, needed);
 
 			if (newMcqs.length < 10) { // Minimum threshold for a valid quiz
-				return res.status(500).json({ message: 'Insufficient questions generated' });
+				return res.status(500).json({ success: false, error: 'Insufficient questions generated', statusCode: 500 });
 			}
 
 			quiz = new QuizModel({
@@ -238,7 +241,7 @@ Output Format (JSON array only, no additional text):
 		const questions = await getQuizQuestionsWithAnswers(targetQuizId);
 
 		if (questions.length === 0) {
-			return res.status(400).json({ message: 'No questions available for this quiz' });
+			return res.status(400).json({ success: false, error: 'No questions available for this quiz', statusCode: 400 });
 		}
 
 		// Select 15 random questions (or fewer if not enough exist)
@@ -260,7 +263,7 @@ Output Format (JSON array only, no additional text):
 			if (!exists.exists()) break;
 			attempts++;
 			if (attempts >= maxAttempts) {
-				return res.status(500).json({ message: 'Failed to generate unique challenge code' });
+				return res.status(500).json({ success: false, error: 'Failed to generate unique challenge code', statusCode: 500 });
 			}
 		} while (true);
 
@@ -330,7 +333,7 @@ Output Format (JSON array only, no additional text):
 		});
 	} catch (err: any) {
 		console.error('createLiveChallenge error:', err);
-		return res.status(500).json({ message: 'Server error', details: err.message });
+		return res.status(500).json({ success: false, error: 'Server error', statusCode: 500 });
 	}
 };
 
@@ -339,16 +342,16 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 		const { challengeCode } = req.body || {};
 		const userId = req.user._id?.toString();
 		const username = req.user.username || 'Player';
-		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+		if (!challengeCode || !userId) return res.status(400).json({ success: false, error: 'challengeCode required', statusCode: 400 });
 
 		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
 		const metaSnap = await baseRef.child('meta').get();
-		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		if (!metaSnap.exists()) return res.status(404).json({ success: false, error: 'Challenge not found', statusCode: 404 });
 		const meta = metaSnap.val();
 		
 		// Allow rejoining if challenge is in-progress (for reconnection)
 		if (meta.status !== 'waiting' && meta.status !== 'in-progress') {
-			return res.status(400).json({ message: 'Challenge already completed' });
+			return res.status(400).json({ success: false, error: 'Challenge already completed', statusCode: 400 });
 		}
 
 		const now = Date.now();
@@ -375,7 +378,7 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 		} else {
 			// New participant joining
 			if (meta.status !== 'waiting') {
-				return res.status(400).json({ message: 'Cannot join: Challenge already in progress' });
+				return res.status(400).json({ success: false, error: 'Cannot join: Challenge already in progress', statusCode: 400 });
 			}
 
 			await baseRef.child(`participants/${userId}`).set({
@@ -412,7 +415,7 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 		}
 	} catch (err: any) {
 		console.error('joinLiveChallenge error:', err);
-		return res.status(500).json({ message: 'Server error', details: err.message });
+		return res.status(500).json({ success: false, error: 'Server error', statusCode: 500 });
 	}
 };
 
@@ -420,15 +423,15 @@ export const disconnectFromLiveChallenge = async (req: any, res: Response) => {
 	try {
 		const { challengeCode } = req.body || {};
 		const userId = req.user._id?.toString();
-		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+		if (!challengeCode || !userId) return res.status(400).json({ success: false, error: 'challengeCode required', statusCode: 400 });
 
 		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
 		const metaSnap = await baseRef.child('meta').get();
-		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		if (!metaSnap.exists()) return res.status(404).json({ success: false, error: 'Challenge not found', statusCode: 404 });
 
 		const participantSnap = await baseRef.child(`participants/${userId}`).get();
 		if (!participantSnap.exists()) {
-			return res.status(404).json({ message: 'Participant not found in this challenge' });
+			return res.status(404).json({ success: false, error: 'Participant not found in this challenge', statusCode: 404 });
 		}
 
 		// Mark participant as inactive (don't remove them)
@@ -445,7 +448,7 @@ export const disconnectFromLiveChallenge = async (req: any, res: Response) => {
 		});
 	} catch (err: any) {
 		console.error('disconnectFromLiveChallenge error:', err);
-		return res.status(500).json({ message: 'Server error', details: err.message });
+		return res.status(500).json({ success: false, error: 'Server error', statusCode: 500 });
 	}
 };
 
@@ -453,18 +456,18 @@ export const startLiveChallenge = async (req: any, res: Response) => {
 	try {
 		const { challengeCode } = req.body || {};
 		const userId = req.user._id?.toString();
-		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+		if (!challengeCode || !userId) return res.status(400).json({ success: false, error: 'challengeCode required', statusCode: 400 });
 
 		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
 		const metaSnap = await baseRef.child('meta').get();
-		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		if (!metaSnap.exists()) return res.status(404).json({ success: false, error: 'Challenge not found', statusCode: 404 });
 		const meta = metaSnap.val();
-		if (meta.ownerId !== userId) return res.status(403).json({ message: 'Only owner can start' });
-		if (meta.status !== 'waiting') return res.status(400).json({ message: 'Already started or completed' });
+		if (meta.ownerId !== userId) return res.status(403).json({ success: false, error: 'Only owner can start', statusCode: 403 });
+		if (meta.status !== 'waiting') return res.status(400).json({ success: false, error: 'Already started or completed', statusCode: 400 });
 
 		const questionsSnap = await baseRef.child('questions').get();
 		if (!questionsSnap.exists() || !Array.isArray(questionsSnap.val()) || questionsSnap.val().length === 0) {
-			return res.status(400).json({ message: 'No questions available in challenge' });
+			return res.status(400).json({ success: false, error: 'No questions available in challenge', statusCode: 400 });
 		}
 
 		const participantsSnap = await baseRef.child('participants').get();
@@ -474,7 +477,7 @@ export const startLiveChallenge = async (req: any, res: Response) => {
 		);
 		const participantCount = activeParticipants.length;
 		if (participantCount < 2) { // At least one participant besides the owner
-			return res.status(400).json({ message: 'At least one additional active participant required to start' });
+			return res.status(400).json({ success: false, error: 'At least one additional active participant required to start', statusCode: 400 });
 		}
 
 		const now = Date.now();
@@ -497,7 +500,7 @@ export const startLiveChallenge = async (req: any, res: Response) => {
 		});
 	} catch (err: any) {
 		console.error('startLiveChallenge error:', err);
-		return res.status(500).json({ message: 'Server error', details: err.message });
+		return res.status(500).json({ success: false, error: 'Server error', statusCode: 500 });
 	}
 };
 
@@ -506,26 +509,26 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		const { challengeCode, answer } = req.body || {};
 		const userId = req.user._id?.toString();
 		const username = req.user.username || 'Player';
-		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
-		if (!answer) return res.status(400).json({ message: 'answer required' });
+		if (!challengeCode || !userId) return res.status(400).json({ success: false, error: 'challengeCode required', statusCode: 400 });
+		if (!answer) return res.status(400).json({ success: false, error: 'answer required', statusCode: 400 });
 
 		const normalized = (answer || '').toString().trim().toLowerCase();
 		if (!['a', 'b', 'c', 'd'].includes(normalized)) {
-			return res.status(400).json({ message: 'Invalid answer format. Must be a, b, c, or d.' });
+			return res.status(400).json({ success: false, error: 'Invalid answer format. Must be a, b, c, or d.', statusCode: 400 });
 		}
 
 		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
 		const metaSnap = await baseRef.child('meta').get();
-		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		if (!metaSnap.exists()) return res.status(404).json({ success: false, error: 'Challenge not found', statusCode: 404 });
 		const meta = metaSnap.val();
-		if (meta.status !== 'in-progress') return res.status(400).json({ message: 'Challenge not in progress' });
+		if (meta.status !== 'in-progress') return res.status(400).json({ success: false, error: 'Challenge not in progress', statusCode: 400 });
 
 		const currentSnap = await baseRef.child('current').get();
 		const current = currentSnap.val() || { index: 0, startTime: 0 };
 		const currentIdx = current.index;
 		
 		if (typeof currentIdx !== 'number' || currentIdx < 0) {
-			return res.status(400).json({ message: 'Invalid current index' });
+			return res.status(400).json({ success: false, error: 'Invalid current index', statusCode: 400 });
 		}
 
 		// Check if user is submitting for the current question
@@ -534,7 +537,7 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		// Check for duplicate submission
 		const existingAnswerSnap = await baseRef.child(`answers/${idx}/${userId}`).get();
 		if (existingAnswerSnap.exists()) {
-			return res.status(400).json({ message: 'Answer already submitted for this question' });
+			return res.status(400).json({ success: false, error: 'Answer already submitted for this question', statusCode: 400 });
 		}
 
 		// Check if time has expired for current question
@@ -565,7 +568,7 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		}
 
 		const qSnap = await baseRef.child(`questions/${idx}`).get();
-		if (!qSnap.exists()) return res.status(404).json({ message: 'Question not found' });
+		if (!qSnap.exists()) return res.status(404).json({ success: false, error: 'Question not found', statusCode: 404 });
 		const q = qSnap.val();
 
 		const isCorrect = normalized === ((q.answer || '').toString().trim().toLowerCase());
@@ -694,7 +697,7 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		});
 	} catch (err: any) {
 		console.error('submitLiveAnswer error:', err);
-		return res.status(500).json({ message: 'Server error', details: err.message });
+		return res.status(500).json({ success: false, error: 'Server error', statusCode: 500 });
 	}
 };
 
@@ -702,13 +705,13 @@ export const advanceLiveChallenge = async (req: any, res: Response) => {
 	try {
 		const { challengeCode, force } = req.body || {};
 		const userId = req.user._id?.toString();
-		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+		if (!challengeCode || !userId) return res.status(400).json({ success: false, error: 'challengeCode required', statusCode: 400 });
 
 		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
 		const metaSnap = await baseRef.child('meta').get();
-		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		if (!metaSnap.exists()) return res.status(404).json({ success: false, error: 'Challenge not found', statusCode: 404 });
 		const meta = metaSnap.val();
-		if (meta.status !== 'in-progress') return res.status(400).json({ message: 'Challenge not in progress' });
+		if (meta.status !== 'in-progress') return res.status(400).json({ success: false, error: 'Challenge not in progress', statusCode: 400 });
 
 		const currentSnap = await baseRef.child('current').get();
 		const current = currentSnap.val() || { index: 0, startTime: 0 };
@@ -719,7 +722,7 @@ export const advanceLiveChallenge = async (req: any, res: Response) => {
 		const questionsSnap = await baseRef.child('questions').get();
 		const questions = questionsSnap.val() || [];
 		const total = questions.length;
-		if (total === 0) return res.status(400).json({ message: 'No questions in challenge' });
+		if (total === 0) return res.status(400).json({ success: false, error: 'No questions in challenge', statusCode: 400 });
 
 		// Check participants and answers
 		const pSnap = await baseRef.child('participants').get();
@@ -804,7 +807,7 @@ export const advanceLiveChallenge = async (req: any, res: Response) => {
 		}
 	} catch (err: any) {
 		console.error('advanceLiveChallenge error', err);
-		return res.status(500).json({ message: 'Server error', details: err.message });
+		return res.status(500).json({ success: false, error: 'Server error', statusCode: 500 });
 	}
 };
 
@@ -813,11 +816,11 @@ export const checkAndAdvanceIfExpired = async (req: any, res: Response) => {
 	try {
 		const { challengeCode } = req.body || {};
 		const userId = req.user._id?.toString();
-		if (!challengeCode || !userId) return res.status(400).json({ message: 'challengeCode required' });
+		if (!challengeCode || !userId) return res.status(400).json({ success: false, error: 'challengeCode required', statusCode: 400 });
 
 		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
 		const metaSnap = await baseRef.child('meta').get();
-		if (!metaSnap.exists()) return res.status(404).json({ message: 'Challenge not found' });
+		if (!metaSnap.exists()) return res.status(404).json({ success: false, error: 'Challenge not found', statusCode: 404 });
 		const meta = metaSnap.val();
 		if (meta.status !== 'in-progress') {
 			return res.status(200).json({ 
@@ -925,6 +928,6 @@ export const checkAndAdvanceIfExpired = async (req: any, res: Response) => {
 		}
 	} catch (err: any) {
 		console.error('checkAndAdvanceIfExpired error:', err);
-		return res.status(500).json({ message: 'Server error', details: err.message });
+		return res.status(500).json({ success: false, error: 'Server error', statusCode: 500 });
 	}
 };

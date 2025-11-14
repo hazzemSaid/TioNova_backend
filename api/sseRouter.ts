@@ -1,7 +1,9 @@
 import express from "express";
-const router = express.Router();
-const { streamUpdates } = require("../src/controllers/sseController");
+import sseController from "../src/controllers/sseController";
 
-// SSE subscribe route
-router.get("/subscribe", streamUpdates);
+const router = express.Router();
+
+// SSE subscribe route (serverless / api folder)
+router.get("/subscribe", sseController.streamUpdates);
+
 export default router;

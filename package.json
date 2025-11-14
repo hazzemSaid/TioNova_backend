@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "node dist/app.js",
     "dev": "ts-node src/app.ts",
+    "dev:watch": "nodemon --watch src --ext ts --exec \"ts-node\" src/app.ts",
     "worker": "ts-node src/workers/chapterWorker.ts",
     "start:all": "concurrently \"npm run dev\" \"npm run worker\"",
     "start:worker": "ts-node api/worker.ts",

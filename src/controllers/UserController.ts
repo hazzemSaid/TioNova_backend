@@ -350,7 +350,7 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 				);
 				
 				if (!response.ok) {
-					throw new Error(`Failed to fetch user info: ${response.statusText}`);
+					throw ErrorHandler.createError(`Failed to fetch user info: ${response.statusText}`, 401);
 				}
 				
 				payload = await response.json();
@@ -358,7 +358,7 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 				console.log('✅ Verified as access token');
 			} catch (accessTokenError) {
 				console.error('❌ Both ID token and access token verification failed');
-				throw new Error('Invalid token');
+				throw ErrorHandler.createError('Invalid token', 401);
 			}
 		}
 
@@ -502,7 +502,7 @@ const verifyCode = asyncWrapper(async (req, res, next) => {
 		const decoded = JWT.verify(user.resetPasswordToken, requiredEnvVars.JWT_ACCESS_SECRET as string) as any;
 
 		if (decoded.email !== email || decoded.purpose !== 'password-reset') {
-			throw new Error('Invalid token');
+			throw ErrorHandler.createError('Invalid token', 401);
 		}
 
 		const isCodeValid = await compare(code, user.resetPasswordCode);
@@ -543,7 +543,7 @@ const resetPassword = asyncWrapper(async (req, res, next) => {
 		const decoded = JWT.verify(user.resetPasswordToken, requiredEnvVars.JWT_ACCESS_SECRET as string) as any;
 
 		if (decoded.email !== email || decoded.purpose !== 'password-reset') {
-			throw new Error('Invalid token');
+			throw ErrorHandler.createError('Invalid token', 401);
 		}
 
 		const isCodeValid = await compare(code, user.resetPasswordCode || '');

@@ -1,7 +1,6 @@
 import cors from "cors";
 import * as dotenv from "dotenv";
 import express, { NextFunction, Request, Response } from "express";
-import sse from "../api/sseRouter";
 import { connectDB } from "./database/mongodb";
 import analysisRouter from "./routers/analysisRouter";
 import ChapterRouter from "./routers/ChapterRouter";
@@ -16,6 +15,7 @@ import ShareRouter from "./routers/ShareRouter";
 import SummaryRouter from "./routers/SummaryRouter";
 import UserRoute from "./routers/UserRouter";
 import { ICustomError } from "./utils/error";
+import sseRouter from "../api/sseRouter";
 // Load env
 dotenv.config();
 
@@ -54,6 +54,7 @@ app.get("/api/v1/health", (req, res) => {
 app.use("/api/v1", UserRoute);
 app.use("/api/v1", FolderRouter);
 app.use("/api/v1", ChapterRouter);
+app.use("/api/v1/sse", sseRouter);
 app.use("/api/v1", QuizRouter);
 app.use("/api/v1", SummaryRouter);
 app.use("/api/v1", MindmapRouter);
@@ -63,7 +64,6 @@ app.use("/api/v1", PdfRouter);
 app.use("/api/v1", LiveChallengeRouter);
 app.use("/api/v1", analysisRouter);
 app.use("/api/v1", profileRouter);
-app.use("/api/v1", sse);
 
 app.use(
   (err: ICustomError, req: Request, res: Response, next: NextFunction) => {
@@ -71,8 +71,8 @@ app.use(
 
     res.status(err.statuscode || 500).json({
       success: false,
-      message: err.message || "Something went wrong",
-      data: err.data || null,
+      error: err.message || "Something went wrong",
+      statusCode: err.statuscode || 500,
     });
   }
 );

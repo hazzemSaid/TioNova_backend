@@ -22,7 +22,8 @@ const ChapterModel = new mongoose.Schema({
         required: false
     }
     , content: {
-        type: Buffer, // Store PDF file as binary data
+        // Can be PDF buffer or YouTube URL string
+        type: mongoose.Schema.Types.Mixed,
         required: true
     },
     overcontent:{
@@ -31,9 +32,9 @@ const ChapterModel = new mongoose.Schema({
     },
   
     contentType: {
-    type: String,
-    default: "application/pdf"
-}
+        type: String,
+        default: "application/pdf"
+    }
     , createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

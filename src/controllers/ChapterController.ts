@@ -1,355 +1,80 @@
-import mongoose from "mongoose";
 import asyncWrapper from "../middleware/asyncwrapper";
-import ChapterModel from "../models/ChapterModel";
-import FolderModel from "../models/FolderModel";
-// Queue not used in this path; background extraction runs inline after responding
-// import { chapterQueue } from "../queues/chapterQueue";
-import { AnalysisService } from "../services/analysisService";
-import { CacheKeys } from "../utils/cache_keys";
-import CacheHelper from "../utils/cacheHelper";
+import { createChapterService, deleteChapterService, getChapterContentService, getChaptersService } from "../services/chapterService";
 import ErrorHandler from "../utils/error";
-import { retryGeminiApiCall } from "../utils/geminiApi";
 import { sendEventToUser } from "./sseController";
-
 const createchapter = asyncWrapper(async (req, res, next) => {
-    const { folderId, title, description, category } = req.body;
-    const file = req.file;
-
-    const folder = await FolderModel.findById(folderId);
-    if (!folder) {
-        return next(ErrorHandler.createError("Folder not found", 404));
-    }
-
-    if (!file) {
-        return next(ErrorHandler.createError("PDF file is required", 400));
-    }
-
-    if (file.mimetype !== "application/pdf") {
-        return next(ErrorHandler.createError("PDF file is required", 400));
-    }
-
-    // We'll create the Chapter document after extraction finishes so the model
-    // is persisted at the end of the process (avoids storing partial/empty overcontent)
-    let chapter: any = null;
-    let updatedChapter: any = null;
-
-    // SSE: notify client that work started (0%)
     try {
-        sendEventToUser(req.user._id.toString(), {
-            progress: 0,
-            message: "Chapter upload received, starting processing",
-        });
-    } catch (e) {
-        console.warn("SSE: failed to send 0% event", e);
-    }
-
-    // ✅ Extract content synchronously - user waits for completion
-    try {
-        const base64 = file.buffer.toString("base64");
-        const requestBody = {
-            contents: [
-                {
-                    parts: [
-                        {
-                            text: `You are an expert document cleaning and text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and complete text version of its content.
-
-**Instructions:**
-1. **Extract all text.** Capture all readable text from the document, including headings, paragraphs, and lists.
-2. **Remove noise and artifacts.** Eliminate OCR errors, visual artifacts, duplicated phrases, page numbers, headers, and footers.
-3. **Structure and normalize content.**
-     * Reconstruct broken sentences and paragraphs.
-     * Maintain the original hierarchy of chapters, sections, and sub-sections.
-     * Preserve bullet points, numbered lists, and code blocks.
-4. **Final output:** Provide ONLY the cleaned, raw text content of the document. Do not summarize, interpret, or add any commentary.
-
-**Output format:** Return the full, uninterpreted text in a single, well-formatted string.`,
-                        },
-                        {
-                            inlineData: {
-                                mimeType: file.mimetype,
-                                data: base64,
-                            },
-                        },
-                    ],
-                },
-            ],
-            generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
-        } as any;
-
-        // SSE: starting extraction (25%)
-        try {
-            sendEventToUser(req.user._id.toString(), {
-                progress: 25,
-                message: "Starting content extraction",
+        let result;
+        let chapterObj;
+        let chapterResponse;
+         if (req.body.contentType === "application/pdf" || req.file) {
+            result = await createChapterService(req.user, req.body, req.file, sendEventToUser);
+            chapterObj = typeof result.chapter.toObject === 'function' ? result.chapter.toObject() : result.chapter;
+            chapterResponse = {
+                _id: chapterObj._id,
+                title: chapterObj.title,
+                description: chapterObj.description,
+                folderId: chapterObj.folderId,
+                createdBy: chapterObj.createdBy,
+                createdAt: chapterObj.createdAt,
+                contentType: chapterObj.contentType,
+                overcontent: result.extractedText || undefined,
+            };
+            res.status(200).json({
+                success: true,
+                message: "Chapter created successfully with content extraction",
+                chapter: chapterResponse,
+                jobStatus: "Completed",
             });
-        } catch (e) {
-            console.warn("SSE: failed to send 25% event", e);
-        }
-
-        const response = await retryGeminiApiCall(requestBody);
-        const data = await response.json();
-
-        // SSE: received response from extraction service (50%)
-        try {
-            sendEventToUser(req.user._id.toString(), {
-                progress: 50,
-                message: "Extraction service responded",
-            });
-        } catch (e) {
-            console.warn("SSE: failed to send 50% event", e);
-        }
-
-        const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined;
-
-        // Create chapter record now that extraction finished (or failed)
-        chapter = await ChapterModel.create({
-            content: file.buffer,
-            contentType: file.mimetype,
-            createdBy: req.user._id,
-            updatedBy: req.user._id,
-            folderId,
-            overcontent: extractedText || null,
-            title,
-            description,
-            category,
-        });
-
-        // If we got extracted text, cache it and invalidate related caches
-        if (extractedText) {
-            // Cache the extracted content
-            const overcontentKey = CacheKeys.getChapterOverContentKey(chapter._id.toString());
-            await CacheHelper.set(overcontentKey, extractedText, CacheKeys.TTL.ONE_WEEK);
-
-            // Invalidate chapters list cache for affected users
-            const affectedUsers = [
-                folder.ownerId.toString(),
-                ...((folder.sharedWith || []) as any[]).map((id: any) => id.toString()),
-            ];
-            await CacheHelper.invalidateChaptersList(folderId, affectedUsers);
-
-            // Invalidate chapter content cache since overcontent changed
-            const contentKey = CacheKeys.getChapterContentKey(chapter._id.toString());
-            await CacheHelper.delete(contentKey);
-
-            console.log(`✅ [Chapter ${chapter._id}] Content extraction completed (${extractedText.length} chars)`);
-
-            // SSE: extraction and cache update done (75%)
-            try {
-                sendEventToUser(req.user._id.toString(), {
-                    chapterId: chapter._id.toString(),
-                    progress: 75,
-                    message: "Content extraction and cache update completed",
-                });
-            } catch (e) {
-                console.warn("SSE: failed to send 75% event", e);
-            }
         } else {
-            console.warn(`⚠️ [Chapter temporary] No text extracted from Gemini API`);
+            // Extend here for future content types
+            return next(ErrorHandler.createError("Unsupported content type", 400));
         }
-        
-    } catch (e) {
-        console.error("❌ Content extraction failed:", e);
-        // Don't fail the request, chapter may be created without overcontent
+    } catch (err) {
+        next(err);
     }
-
-    // ✅ Update analysis: recent chapters and increment total chapters
-    try {
-        await AnalysisService.updateRecentChapters(req.user._id.toString(), chapter._id.toString());
-        await AnalysisService.updateRecentFolders(req.user._id.toString(), folderId);
-        // SSE: all post-processing done (100%)
-        try {
-            // Prefer the updated chapter if available (includes overcontent)
-            const finalChapter = updatedChapter || chapter;
-
-            // Include a small preview and a flag rather than the full overcontent to avoid huge SSE payloads
-            const hasOvercontent = !!(finalChapter && finalChapter.overcontent);
-            const overcontentPreview = hasOvercontent
-                ? String(finalChapter.overcontent).slice(0, 2000)
-                : null;
-
-            sendEventToUser(req.user._id.toString(), {
-                chapterId: finalChapter._id.toString(),
-                progress: 100,
-                message: "Chapter processing completed",
-                chapter: {
-                    _id: finalChapter._id,
-                    title: finalChapter.title,
-                    description: finalChapter.description,
-                    folderId: finalChapter.folderId,
-                    createdBy: finalChapter.createdBy,
-                    createdAt: finalChapter.createdAt,
-                    contentType: finalChapter.contentType,
-                    hasOvercontent,
-                    overcontentPreview,
-                },
-            });
-        } catch (e) {
-            console.warn("SSE: failed to send 100% event", e);
-        }
-    } catch (e) {
-        console.error("Error updating analysis:", e);
-    }
-
-    // Return chapter data without content buffer
-    // Use updatedChapter if present so the HTTP response reflects the extracted content
-    const finalResponseChapter = (typeof updatedChapter !== 'undefined' && updatedChapter) ? updatedChapter : chapter;
-    const chapterResponse = {
-        _id: finalResponseChapter._id,
-        title: finalResponseChapter.title,
-        description: finalResponseChapter.description,
-        folderId: finalResponseChapter.folderId,
-        createdBy: finalResponseChapter.createdBy,
-        createdAt: finalResponseChapter.createdAt,
-        contentType: finalResponseChapter.contentType,
-    };
-
-    res.status(200).json({
-        success: true,
-        message: "Chapter created successfully with content extraction",
-        chapter: chapterResponse,
-        jobStatus: "Completed",
-    });
 });
 
 const getchapters = asyncWrapper(async (req, res, next) => {
-    const user = req.user;
-    const userId = user._id;
-    const { folderId } = req.params;
-
-    if (!folderId) {
-        return next(ErrorHandler.createError("folderId is required", 400));
+    try {
+        const chapters = await getChaptersService(req.user, req.params.folderId);
+        res.status(200).json({
+            success: true,
+            message: "Chapters retrieved successfully",
+            chapters,
+        });
+    } catch (err) {
+        next(err);
     }
-
-    const chapters = await ChapterModel.aggregate([
-        { $match: { folderId: new mongoose.Types.ObjectId(folderId) } },
-        {
-            $lookup: {
-                from: "userquizstatuses",
-                let: { chapterId: "$_id" },
-                pipeline: [
-                    {
-                        $match: {
-                            $expr: {
-                                $and: [
-                                    { $eq: ["$chapterId", "$$chapterId"] },
-                                    { $eq: ["$userId", new mongoose.Types.ObjectId(userId)] },
-                                ],
-                            },
-                        },
-                    },
-                    { $sort: { updatedAt: -1 } },
-                    { $limit: 1 },
-                ],
-                as: "userQuizStatus",
-            },
-        },
-        {
-            $addFields: {
-                userQuizStatusObj: { $arrayElemAt: ["$userQuizStatus", 0] },
-            },
-        },
-        {
-            $project: {
-                _id: 1,
-                title: 1,
-                description: 1,
-                createdAt: 1,
-                createdBy: 1,
-                quizId: 1,
-                summaryId: 1,
-                mindmapId: 1,
-                quizStatus: { $ifNull: ["$userQuizStatusObj.status", "NotTaken"] },
-                quizScore: { $ifNull: ["$userQuizStatusObj.score", 0] },
-                quizCompleted: {
-                    $cond: [{ $ifNull: ["$userQuizStatusObj", false] }, true, false],
-                },
-            },
-        },
-    ]);
-
-    res.status(200).json({
-        success: true,
-        message: "Chapters retrieved successfully",
-        chapters,
-    });
 });
 
 const getchaptercontent = asyncWrapper(async (req, res, next) => {
-    const { chapterId } = req.params;
-    const userId = req.user._id || req.user.id;
-    const chapter = await ChapterModel.findById(chapterId);
-
-    if (!chapter) {
-        return next(ErrorHandler.createError("Chapter not found", 404));
-    }
-
-    const cachedContent = await CacheHelper.getCachedChapterContent(chapterId);
-
-    if (cachedContent) {
-        return res.status(200).json({
+    try {
+        const result = await getChapterContentService(req.user, req.params.chapterId);
+        res.status(200).json({
             success: true,
-            message: "Chapter content retrieved from cache",
-            content: cachedContent,
-            contentType: chapter.contentType,
-            cached: true,
+            message: result.cached ? "Chapter content retrieved from cache" : "Chapter content retrieved successfully",
+            content: result.content,
+            contentType: result.contentType,
+            cached: result.cached,
         });
+    } catch (err) {
+        next(err);
     }
-
-    // Cache the content
-    await CacheHelper.cacheChapterContent(
-        chapterId,
-        chapter.content,
-        CacheKeys.TTL.ONE_WEEK
-    );
-
-    res.status(200).json({
-        success: true,
-        message: "Chapter content retrieved successfully",
-        content: chapter.content,
-        contentType: chapter.contentType,
-        cached: false,
-    });
 });
 
 const deletechapter = asyncWrapper(async (req, res, next) => {
-    const { chapterId } = req.params;
-    const userId = req.user._id;
-
-    const chapter = await ChapterModel.findById(chapterId);
-    if (!chapter) {
-        return next(ErrorHandler.createError("Chapter not found", 404));
+    try {
+        const { chapterId } = req.params;
+        const result = await deleteChapterService(req.user, chapterId);
+        res.status(200).json({
+            success: result.success,
+            message: result.message,
+        });
+    } catch (err) {
+        
+        next(err);
     }
-
-    const folderId = chapter.folderId;
-    const folder = await FolderModel.findById(folderId);
-
-    if (!folder) {
-        return next(ErrorHandler.createError("Folder not found", 404));
-    }
-
-    if (folder.ownerId.toString() !== userId.toString()) {
-        return next(
-            ErrorHandler.createError(
-                "You do not have access to delete this chapter. Must be the owner of the folder",
-                403
-            )
-        );
-    }
-
-    const affectedUsers = [
-        folder.ownerId.toString(),
-        ...(folder.sharedWith || []).map((id: any) => id.toString()),
-    ];
-
-    // ✅ Invalidate all chapter-related caches
-    await CacheHelper.invalidateChapter(chapterId, folder._id.toString(), affectedUsers);
-
-    await chapter.deleteOne();
-
-    res.status(200).json({
-        success: true,
-        message: "Chapter deleted successfully",
-    });
 });
 
 const ChapterController = {

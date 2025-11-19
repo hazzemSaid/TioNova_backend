@@ -269,6 +269,19 @@ Output Format (JSON array only, no additional text):
 
 		const now = Date.now();
 		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
+		// Fetch profile to get photo
+		const profile = await ProfileService.getProfile(ownerId);
+		const participantObj: any = {
+			username,
+			email: req.user.email,
+			score: 0,
+			joinedAt: now,
+			active: true,
+		};
+		if (profile && profile.profilePicture) {
+			participantObj.photoUrl = profile.profilePicture;
+		}
+
 		await baseRef.set({
 			meta: {
 				ownerId,
@@ -281,7 +294,7 @@ Output Format (JSON array only, no additional text):
 				challengeCode,
 			},
 			participants: {
-				[ownerId]: { username, email: req.user.email, photoUrl: req.user.profilePicture, score: 0, joinedAt: now, active: true },
+				[ownerId]: participantObj,
 			},
 			questions: selectedQuestions, // includes answers for synchronized correctness
 			current: { index: -1 }, // -1 before start
@@ -360,13 +373,18 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 		if (participantSnap.exists()) {
 			// User is reconnecting - mark them as active again
 			const existingData = participantSnap.val();
-			await baseRef.child(`participants/${userId}`).update({
+			// Fetch profile to get photo
+			const profile = await ProfileService.getProfile(userId);
+			const updateObj: any = {
 				active: true,
 				rejoinedAt: now,
 				username, // Update username in case it changed
 				email: req.user.email,
-				photoUrl: req.user.profilePicture,
-			});
+			};
+			if (profile && profile.profilePicture) {
+				updateObj.photoUrl = profile.profilePicture;
+			}
+			await baseRef.child(`participants/${userId}`).update(updateObj);
 
 			return res.status(200).json({
 				success: true,
@@ -381,14 +399,20 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 				return res.status(400).json({ success: false, error: 'Cannot join: Challenge already in progress', statusCode: 400 });
 			}
 
-			await baseRef.child(`participants/${userId}`).set({
+			// Fetch profile to get photo
+			const profile = await ProfileService.getProfile(userId);
+			const participantObj: any = {
 				username,
 				email: req.user.email,
-				photoUrl: req.user.profilePicture,
 				score: 0,
 				joinedAt: now,
 				active: true,
-			});
+			};
+			if (profile && profile.profilePicture) {
+				participantObj.photoUrl = profile.profilePicture;
+			}
+
+			await baseRef.child(`participants/${userId}`).set(participantObj);
 
 			// Mirror in Mongo participants array (append if not existing)
 			await ChallengeResultModel.updateOne(

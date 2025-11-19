@@ -86,34 +86,34 @@ UserSchema.pre('save', async function (next) {
 	}
 });
 
-// Instance method to compare password
-export interface IUser {
-	username: string;
-	email: string;
-	password: string;
-	refreshtoken?: string;
-	role?: 'user' | 'admin';
-	verified?: boolean;
-	createdAt?: Date;
-	lastLogin?: Date;
-	googleId?: string;
-	verificationCode?: string;
-	verificationCodeExpire?: Date;
-	resetPasswordCode?: string;
-	resetPasswordToken?: string;
-	resetPasswordExpire?: Date;
-}
+// // Instance method to compare password
+// export interface IUser {
+// 	username: string;
+// 	email: string;
+// 	password: string;
+// 	refreshtoken?: string;
+// 	role?: 'user' | 'admin';
+// 	verified?: boolean;
+// 	createdAt?: Date;
+// 	lastLogin?: Date;
+// 	googleId?: string;
+// 	verificationCode?: string;
+// 	verificationCodeExpire?: Date;
+// // 	resetPasswordCode?: string;
+// // 	resetPasswordToken?: string;
+// // 	resetPasswordExpire?: Date;
+// // }
 
-export interface IUserDocument extends IUser, Document {
-	comparePassword(candidatePassword: string): Promise<boolean>;
-	toAuthJSON(): Record<string, any>;
-	profile: Record<string, any>;
-}
+// export interface IUserDocument extends IUser, Document {
+// 	comparePassword(candidatePassword: string): Promise<boolean>;
+// 	toAuthJSON(): Record<string, any>;
+// 	profile: Record<string, any>;
+// }
 
-export interface IUserModel extends Model<IUserDocument> {
-	findByEmailOrUsername(identifier: string): Promise<IUserDocument | null>;
-	cleanupExpiredCodes(): Promise<any>;
-}
+// export interface IUserModel extends Model<IUserDocument> {
+// 	findByEmailOrUsername(identifier: string): Promise<IUserDocument | null>;
+// 	cleanupExpiredCodes(): Promise<any>;
+// }
 
 // Instance method to clear sensitive fields
 UserSchema.methods.toAuthJSON = function () {

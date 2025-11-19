@@ -1,8 +1,39 @@
+// Add at the top, after imports
+export interface UserPreferences {
+    studyPerDay?: number;
+    preferredStudyTimes?: string;
+    dailyTimeCommitmentMinutes?: number;
+    daysPerWeek?: number;
+    goals?: string[];
+    reminderEnabled?: boolean;
+    reminderTimes?: string[];
+    contentDifficulty?: "easy" | "medium" | "hard" | "progressive";
+}
 import ProfileModel from "../models/profileModel";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 
 export class ProfileService {
+        /**
+         * Get preferences for a user
+         */
+        static async getPreferences(userId: string) {
+            const profile = await ProfileModel.findOne({ userId });
+            return profile?.preferences || null;
+        }
+
+        /**
+         * Update preferences for a user
+         */
+        static async updatePreferences(userId: string, preferences: UserPreferences) {
+            const profile = await ProfileModel.findOneAndUpdate(
+                { userId },
+                { $set: { preferences } },
+                { new: true }
+            );
+            // Optionally cache preferences here
+            return profile?.preferences || null;
+        }
     /**
      * Initialize profile document for a new user
      */

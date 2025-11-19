@@ -13,6 +13,7 @@ const upload = multer({
     }
 });
 
+
 // Get authenticated user's profile
 profileRouter.get("/profile", verifyToken, ProfileController.getProfile);
 
@@ -20,6 +21,13 @@ profileRouter.get("/profile", verifyToken, ProfileController.getProfile);
 profileRouter.put("/profile", verifyToken, upload.single('profilePicture'), ProfileController.updateProfile);
 
 // Get public profile by userId
+
+// Get user preferences
+profileRouter.get("/profile/preferences", verifyToken, ProfileController.getPreferences);
+
+// Update user preferences
+import { preferencesValidation } from "../utils/validation";
+profileRouter.patch("/profile/preferences", verifyToken, preferencesValidation, ProfileController.updatePreferences);
 profileRouter.get("/profile/:userId", ProfileController.getPublicProfile);
 
 export default profileRouter;

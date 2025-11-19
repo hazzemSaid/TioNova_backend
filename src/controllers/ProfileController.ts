@@ -4,7 +4,23 @@ import UserModel from "../models/UserModel";
 import { ProfileService } from "../services/profileService";
 import { uploadToCloudinary } from "../utils/cloudinaryService";
 import ErrorHandler from "../utils/error";
-
+  const getPreferences = asyncWrapper(async (req, res, next) => {
+        const userId = req.user._id || req.user.id;
+        const preferences = await ProfileService.getPreferences(userId);
+        if (!preferences) {
+            return res.status(404).json({ success: false, error: "Preferences not found", statusCode: 404 });
+        }
+        res.status(200).json({ success: true, data: preferences });
+    });
+      const updatePreferences = asyncWrapper(async (req, res, next) => {
+        const userId = req.user._id || req.user.id;
+        const preferences = req.body;
+        const updated = await ProfileService.updatePreferences(userId, preferences);
+        if (!updated) {
+            return res.status(404).json({ success: false, error: "Preferences not found", statusCode: 404 });
+        }
+        res.status(200).json({ success: true, data: updated });
+    });
 const getProfile = asyncWrapper(async (req, res, next) => {
     const userId = req.user._id || req.user.id;
     
@@ -21,8 +37,11 @@ const getProfile = asyncWrapper(async (req, res, next) => {
         
         profile = await ProfileService.getProfile(userId);
     }
+  
+
+    // Update user preferences
+  
     
-    // Get user data to include email and other auth info
     const user = await UserModel.findById(userId).select('email verified createdAt role').lean();
     
     res.status(200).json({
@@ -164,6 +183,7 @@ const ProfileController = {
     getProfile,
     updateProfile,
     getPublicProfile
+    ,getPreferences,updatePreferences
 };
 
 export default ProfileController;

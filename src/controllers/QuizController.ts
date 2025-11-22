@@ -13,7 +13,7 @@ import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
 
 const createquiz = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
-    
+
     if (!chapterId) {
         return next(ErrorHandler.createError("chapterId is required", 400));
     }
@@ -26,7 +26,7 @@ const createquiz = asyncWrapper(async (req, res, next) => {
     try {
         // ✅ Load from cache using helper
         const cachedQuiz = await CacheHelper.getCachedQuiz(chapterId);
-        
+
         if (cachedQuiz) {
             quizId = cachedQuiz.quizId;
             quizTitle = cachedQuiz.title;
@@ -36,7 +36,7 @@ const createquiz = asyncWrapper(async (req, res, next) => {
         // ✅ Load from DB if cache empty
         if (cachedQuestions.length === 0) {
             const existingQuiz = await QuizModel.findOne({ chapterId }).populate("questions");
-            
+
             if (existingQuiz) {
                 quiz = existingQuiz;
                 quizId = existingQuiz._id.toString();
@@ -59,13 +59,13 @@ const createquiz = asyncWrapper(async (req, res, next) => {
         // ✅ Generate new questions if less than 50
         if (cachedQuestions.length < 50) {
             const chapter = await ChapterModel.findById(chapterId);
-            
+
             if (!chapter) {
                 return next(ErrorHandler.createError("Chapter not found", 404));
             }
 
             const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
-            
+
             if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
                 return next(ErrorHandler.createError("Chapter content is missing", 400));
             }
@@ -109,7 +109,7 @@ Output Format (JSON array only, no additional text):
             // ✅ Use Gemini API for all content types
             const base64File = chapter.content.toString("base64");
             const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-            
+
             let geminiPrompt: string;
             if (hasOvercontent) {
                 geminiPrompt = `${systemPrompt}\n\nChapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
@@ -119,7 +119,7 @@ Output Format (JSON array only, no additional text):
 
             const requestBody = {
                 contents: [{
-                    parts: hasOvercontent 
+                    parts: hasOvercontent
                         ? [{ text: geminiPrompt }]
                         : [
                             { text: geminiPrompt },
@@ -141,12 +141,12 @@ Output Format (JSON array only, no additional text):
                 // Fallback: try regex parsing
                 const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
                 const matches = [...rawText.matchAll(pattern)];
-                
+
                 for (const m of matches) {
-                    const options = m[2].split(",").map((s: any) => 
+                    const options = m[2].split(",").map((s: any) =>
                         s.trim().replace(/^"|"$/g, "")
                     );
-                    
+
                     if (options.length === 4) {
                         newMcqs.push({
                             question: m[1],
@@ -244,17 +244,17 @@ Output Format (JSON array only, no additional text):
 const getchapterquiz = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.params;
     const chapter = await ChapterModel.findById(chapterId);
-    
+
     if (!chapter) {
         return next(ErrorHandler.createError("Chapter not found", 404));
     }
-    
+
     const quiz = await QuizModel.findOne({ chapterId: chapter._id });
-    
+
     if (!quiz) {
         return next(ErrorHandler.createError("Quiz not found", 404));
     }
-    
+
     res.status(200).json({
         success: true,
         message: "Quiz retrieved successfully",
@@ -265,11 +265,11 @@ const getchapterquiz = asyncWrapper(async (req, res, next) => {
 const getQuizQuestions = asyncWrapper(async (req, res, next) => {
     const { quizId } = req.params;
     const quiz = await QuizModel.findById(quizId);
-    
+
     if (!quiz) {
         return next(ErrorHandler.createError("Quiz not found", 404));
     }
-    
+
     const questions: any = [];
     for (let i = 0; i < quiz.questions.length; i++) {
         const question = await QuestionModel.findById(quiz.questions[i]);
@@ -278,7 +278,7 @@ const getQuizQuestions = asyncWrapper(async (req, res, next) => {
         }
         questions.push(question);
     }
-    
+
     res.status(200).json({
         success: true,
         message: "Questions retrieved successfully",
@@ -289,15 +289,15 @@ const getQuizQuestions = asyncWrapper(async (req, res, next) => {
 const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
     const userId = req.user._id;
     const { quizId, chapterId, answers, timeTaken } = req.body || {};
-    
+
     if (!quizId) {
         return next(ErrorHandler.createError("quizId is required", 400));
     }
-    
+
     if (!chapterId) {
         return next(ErrorHandler.createError("chapterId is required", 400));
     }
-    
+
     if (!Array.isArray(answers) || answers.length === 0) {
         return next(ErrorHandler.createError("answers must be a non-empty array", 400));
     }
@@ -306,7 +306,7 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
     if (!quiz) {
         return next(ErrorHandler.createError("Quiz not found", 404));
     }
-    
+
     if (quiz.chapterId.toString() !== chapterId.toString()) {
         return next(
             ErrorHandler.createError("quizId does not belong to provided chapterId", 400)
@@ -333,20 +333,20 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
         question?: string;
         options?: string[];
     }> = [];
-    
+
     let correctCount = 0;
     for (const a of answers) {
         const qId = a.questionId || a.quetionid;
         const selected = (a.answer || "").toString().trim().toLowerCase();
         if (!qId || !selected) continue;
-        
+
         const qDoc = questionIdToDoc[qId.toString()];
         if (!qDoc) continue;
-        
+
         const correct = (qDoc.answer || "").toString().trim().toLowerCase();
         const isCorrect = selected === correct;
         if (isCorrect) correctCount += 1;
-        
+
         gradedAnswers.push({
             questionId: new mongoose.Types.ObjectId(qDoc._id),
             selectedOption: selected,
@@ -384,12 +384,19 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
 
     // ✅ Update analysis: average score
     try {
+        console.log(`[QuizController] Updating profile for user ${userId}, score ${scorePercent}, time ${timeTaken}s`);
         await AnalysisService.updateAvgScore(userId.toString(), scorePercent);
-        await ProfileService.incrementQuizzesTaken(userId.toString());
+        await ProfileService.incrementQuizzesTaken(userId.toString(), {
+            chapterId: chapterId.toString(),
+            timeTaken
+        });
         await ProfileService.updateAverageQuizScore(userId.toString(), scorePercent);
         await ProfileService.updateStreak(userId.toString());
+        console.log(`[QuizController] ✅ Profile updated successfully`);
     } catch (e) {
-        console.error("Error updating analysis/profile:", e);
+        console.error("❌ [QuizController] CRITICAL ERROR updating analysis/profile:");
+        console.error(e);
+        console.error((e as Error).stack);
     }
 
     // Get updated profile with new streak
@@ -421,10 +428,10 @@ const quizhistory = asyncWrapper(async (req, res, next) => {
     if (!chapterId) {
         return next(ErrorHandler.createError("chapterId is required", 400));
     }
-    
+
     const cacheKey = CacheKeys.getUserQuizHistoryKey(userId, chapterId);
     const cachedHistory = await CacheHelper.get(cacheKey);
-    
+
     if (cachedHistory) {
         return res.status(200).json({
             success: true,
@@ -433,7 +440,7 @@ const quizhistory = asyncWrapper(async (req, res, next) => {
             cached: true,
         });
     }
-    
+
     const statusDocs = await UserQuizStatusModel.find({
         userId,
         chapterId,
@@ -530,7 +537,7 @@ const quizhistory = asyncWrapper(async (req, res, next) => {
         averageScore,
         passRate,
     };
-    
+
     await CacheHelper.set(cacheKey, historyData, CacheKeys.TTL.ONE_HOUR);
 
     return res.status(200).json({

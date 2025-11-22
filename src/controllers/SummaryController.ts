@@ -2,7 +2,6 @@ import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
 import SummaryModel from "../models/SummaryModel";
 import { AnalysisService } from "../services/analysisService";
-import { ProfileService } from "../services/profileService";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
@@ -44,7 +43,7 @@ const summarizecchapter = asyncWrapper(async (req, res, next) => {
                 summaryModel.summary,
                 CacheKeys.TTL.ONE_WEEK
             );
-            
+
             return res.status(200).json({
                 success: true,
                 message: "Retrieved summary from database",
@@ -56,7 +55,7 @@ const summarizecchapter = asyncWrapper(async (req, res, next) => {
 
     // ✅ Generate new summary - use Groq if overcontent exists, otherwise fallback to Gemini
     const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
-    
+
     if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
         return next(ErrorHandler.createError("Chapter content is missing", 400));
     }
@@ -119,9 +118,9 @@ Guidelines:
                 parts: hasOvercontent
                     ? [{ text: geminiPrompt }]
                     : [
-                          { text: geminiPrompt },
-                          { inlineData: { mimeType, data: base64File } },
-                      ],
+                        { text: geminiPrompt },
+                        { inlineData: { mimeType, data: base64File } },
+                    ],
             },
         ],
         generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
@@ -154,48 +153,44 @@ Guidelines:
     chapter.summaryId = summaryModel._id;
     await chapter.save();
 
-    // ✅ Cache the result
+    // Cache the summary
     await CacheHelper.set(summaryKey, summaryJson, CacheKeys.TTL.ONE_WEEK);
 
     // ✅ Update analysis: last summary
     try {
         await AnalysisService.updateLastSummary(user._id.toString(), summaryModel._id.toString());
+
+        // Track summary creation in profile
+        const { ProfileService } = await import('../services/profileService');
         await ProfileService.incrementSummariesCreated(user._id.toString());
         await ProfileService.updateStreak(user._id.toString());
     } catch (e) {
         console.error("Error updating analysis/profile:", e);
     }
 
-    // Get updated profile with new streak
-    const updatedProfile = await ProfileService.getProfile(user._id.toString());
-
     return res.status(200).json({
         success: true,
-        message: "Chapter summarized successfully",
+        message: "Summary generated successfully",
         summary: summaryJson,
         summaryModel,
         cached: false,
-        profile: {
-            streak: updatedProfile?.streak || 0,
-            totalSummariesCreated: updatedProfile?.totalSummariesCreated || 0
-        }
     });
 });
 
 const getChapterSummary = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.params;
     const chapter = await ChapterModel.findById(chapterId);
-    
+
     if (!chapter) {
         return next(ErrorHandler.createError("Chapter not found", 404));
     }
-    
+
     const summary = await SummaryModel.findOne({ chapterId: chapter._id });
-    
+
     if (!summary) {
         return next(ErrorHandler.createError("Summary not found", 404));
     }
-    
+
     res.status(200).json({
         success: true,
         message: "Summary retrieved successfully",

@@ -21,7 +21,7 @@ const QUESTION_DURATION = 30000; // 30 seconds
 const markUnansweredParticipants = async (challengeCode: string, questionIndex: number) => {
 	try {
 		const baseRef = db.ref(`liveChallenges/${challengeCode}`);
-		
+
 		// Get all active participants
 		const participantsSnap = await baseRef.child('participants').get();
 		const participants = participantsSnap.val() || {};
@@ -91,9 +91,9 @@ export const createLiveChallenge = async (req: any, res: Response) => {
 		if (!quiz) {
 			const chapter = await ChapterModel.findById(chapterId);
 			if (!chapter) return res.status(404).json({ success: false, error: 'Chapter not found', statusCode: 404 });
-			
+
 			const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
-			
+
 			if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
 				return res.status(400).json({ success: false, error: 'Chapter content is missing', statusCode: 400 });
 			}
@@ -150,10 +150,10 @@ Output Format (JSON array only, no additional text):
 			} else {
 				// ✅ Fallback to Gemini with PDF (multi-modal path)
 				console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
-				
+
 				const base64File = chapter.content.toString("base64");
 				const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-				
+
 				const geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
 
 				try {
@@ -182,12 +182,12 @@ Output Format (JSON array only, no additional text):
 				// Fallback: try regex parsing
 				const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
 				const matches = [...rawText.matchAll(pattern)];
-				
+
 				for (const m of matches) {
-					const options = m[2].split(",").map((s: any) => 
+					const options = m[2].split(",").map((s: any) =>
 						s.trim().replace(/^"|"$/g, "")
 					);
-					
+
 					if (options.length === 4) {
 						newMcqs.push({
 							question: m[1],
@@ -361,7 +361,7 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 		const metaSnap = await baseRef.child('meta').get();
 		if (!metaSnap.exists()) return res.status(404).json({ success: false, error: 'Challenge not found', statusCode: 404 });
 		const meta = metaSnap.val();
-		
+
 		// Allow rejoining if challenge is in-progress (for reconnection)
 		if (meta.status !== 'waiting' && meta.status !== 'in-progress') {
 			return res.status(400).json({ success: false, error: 'Challenge already completed', statusCode: 400 });
@@ -369,7 +369,7 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 
 		const now = Date.now();
 		const participantSnap = await baseRef.child(`participants/${userId}`).get();
-		
+
 		if (participantSnap.exists()) {
 			// User is reconnecting - mark them as active again
 			const existingData = participantSnap.val();
@@ -429,6 +429,14 @@ export const joinLiveChallenge = async (req: any, res: Response) => {
 					},
 				}
 			);
+
+			// Track challenge participation in profile
+			try {
+				await ProfileService.incrementChallengesTaken(userId);
+				await ProfileService.updateStreak(userId);
+			} catch (e) {
+				console.error("Error tracking challenge participation:", e);
+			}
 
 			return res.status(200).json({
 				success: true,
@@ -550,7 +558,7 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		const currentSnap = await baseRef.child('current').get();
 		const current = currentSnap.val() || { index: 0, startTime: 0 };
 		const currentIdx = current.index;
-		
+
 		if (typeof currentIdx !== 'number' || currentIdx < 0) {
 			return res.status(400).json({ success: false, error: 'Invalid current index', statusCode: 400 });
 		}
@@ -572,11 +580,11 @@ export const submitLiveAnswer = async (req: any, res: Response) => {
 		if (timeExpired) {
 			// Time expired - record as no answer (missed)
 			const ts = Date.now();
-			await baseRef.child(`answers/${idx}/${userId}`).set({ 
-				answer: null, 
-				isCorrect: false, 
+			await baseRef.child(`answers/${idx}/${userId}`).set({
+				answer: null,
+				isCorrect: false,
 				ts,
-				timeExpired: true 
+				timeExpired: true
 			});
 
 			// Don't update score for expired answers
@@ -847,10 +855,10 @@ export const checkAndAdvanceIfExpired = async (req: any, res: Response) => {
 		if (!metaSnap.exists()) return res.status(404).json({ success: false, error: 'Challenge not found', statusCode: 404 });
 		const meta = metaSnap.val();
 		if (meta.status !== 'in-progress') {
-			return res.status(200).json({ 
-				success: true, 
-				needsAdvance: false, 
-				status: meta.status 
+			return res.status(200).json({
+				success: true,
+				needsAdvance: false,
+				status: meta.status
 			});
 		}
 

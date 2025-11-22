@@ -1,9 +1,19 @@
 import asyncWrapper from "../middleware/asyncwrapper";
 import { createFolderService, deleteFolderService, getFoldersService, updateFolderService } from "../services/folderService";
+import { ProfileService } from "../services/profileService";
 
 const createfolder = asyncWrapper(async (req, res, next) => {
     try {
         const { folder, sharedWithUsers } = await createFolderService(req.user, req.body);
+
+        // Track folder creation in profile
+        try {
+            await ProfileService.incrementFoldersCreated(req.user._id.toString());
+            await ProfileService.updateStreak(req.user._id.toString());
+        } catch (e) {
+            console.error("Error tracking folder creation:", e);
+        }
+
         // SSE: Notify owner and shared users
         try {
             const { sendEventToUser } = require("./sseController");
@@ -25,7 +35,7 @@ const createfolder = asyncWrapper(async (req, res, next) => {
                     });
                 });
             }
-        } catch (err) {}
+        } catch (err) { }
         res.status(200).json({
             success: true,
             message: "Folder created successfully",
@@ -68,7 +78,7 @@ const updatefolder = asyncWrapper(async (req: any, res, next) => {
                     });
                 }
             });
-        } catch (err) {}
+        } catch (err) { }
         res.status(200).json({
             success: true,
             message: "Folder updated successfully",
@@ -109,7 +119,7 @@ const deletefolder = asyncWrapper(async (req, res, next) => {
                 type: "folder_deleted",
                 folderId: folderId,
             });
-        } catch (err) {}
+        } catch (err) { }
         res.status(200).json({
             success: true,
             message: "Folder deleted successfully",

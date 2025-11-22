@@ -9,10 +9,10 @@ import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
 import { callGroqApi, extractGroqText, parseGroqJson } from "../utils/groqApi";
 
 const createMindmap = asyncWrapper(async (req, res, next) => {
-    let { chapterId,regenerate }:{chapterId:string,regenerate:boolean} = req.body;
+    let { chapterId, regenerate }: { chapterId: string, regenerate: boolean } = req.body;
     const user = req.user;
-    if(!regenerate){
-        regenerate=false;
+    if (!regenerate) {
+        regenerate = false;
     }
 
     if (!chapterId) {
@@ -142,10 +142,10 @@ Guidelines:
     } else {
         // ✅ Fallback to Gemini with PDF (multi-modal path)
         console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
-        
+
         const base64File = chapter.content.toString("base64");
         const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-        
+
         const geminiPrompt = `${systemPrompt}\n\nProcess the content in this PDF and generate a mindmap.`;
 
         const response = await retryGeminiApiCall({
@@ -159,11 +159,11 @@ Guidelines:
         });
 
         const data = await response.json();
-        
+
         if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
             return next(ErrorHandler.createError("No response from Gemini API", 500));
         }
-        
+
         rawText = data.candidates[0].content.parts[0].text.trim();
     }
 
@@ -247,6 +247,7 @@ Guidelines:
     try {
         await AnalysisService.updateLastMindmap(user._id.toString(), mindmapModel._id.toString());
         await ProfileService.incrementMindmapsCreated(user._id.toString());
+        await ProfileService.logDailyActivity(user._id.toString(), 'mindmap', { chapterId });
         await ProfileService.updateStreak(user._id.toString());
     } catch (e) {
         console.error("Error updating analysis/profile:", e);
@@ -337,7 +338,7 @@ const generatecontent = asyncWrapper(async (req, res, next) => {
     }
 
     const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
-    
+
     if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
         return next(ErrorHandler.createError("Chapter content is missing", 400));
     }
@@ -388,10 +389,10 @@ Generate smart notes about "${text}" based on the chapter content above.`;
     } else {
         // ✅ Fallback to Gemini with PDF (multi-modal path)
         console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
-        
+
         const base64File = chapter.content.toString("base64");
         const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-        
+
         const geminiPrompt = `${systemPrompt}
 
 User's topic: "${text}"
@@ -411,11 +412,11 @@ Generate smart notes about "${text}" based on the chapter content in the PDF.`;
         });
 
         const data = await response.json();
-        
+
         if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
             return next(ErrorHandler.createError("No response from Gemini API", 500));
         }
-        
+
         generatedContent = data.candidates[0].content.parts[0].text.trim();
     }
 
@@ -457,7 +458,7 @@ const getmindmap = asyncWrapper(async (req, res, next) => {
     // Fetch mindmap with populated nodes
     const mindmapModel = await MindmapModel.findById(chapter.mindmapId)
         .populate('nodes');
-    
+
     if (!mindmapModel) {
         return next(ErrorHandler.createError("Mindmap not found", 404));
     }

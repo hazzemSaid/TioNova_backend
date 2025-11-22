@@ -27,6 +27,10 @@ export const deleteChapterService = async (
         ...(folder.sharedWith || []).map((id: any) => id.toString()),
     ];
     await CacheHelper.invalidateChapter(chapterId, folder._id.toString(), affectedUsers);
+
+    // Invalidate profile cache so totalChapters updates
+    await CacheHelper.delete(CacheKeys.getUserProfileKey(folder.ownerId.toString()));
+
     await chapter.deleteOne();
     return { success: true, message: "Chapter deleted successfully" };
 };
@@ -53,24 +57,26 @@ export const createChapterService = async (
     let chapter = null;
     let updatedChapter = null;
     if (sendEventToUser) {
-        try { sendProgressEvent(user._id.toString(), 0, "Chapter upload received, starting processing"); } catch {}
+        try { sendProgressEvent(user._id.toString(), 0, "Chapter upload received, starting processing"); } catch { }
     }
     try {
         const base64 = file.buffer.toString("base64");
         const requestBody = {
-            contents: [{ parts: [
-                { text: `You are an expert educational document cleaning and intelligent text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and highly useful text version of its content for learning, summarization, and quiz generation.\n\n**Instructions:**\n1. **Extract all educationally relevant text.** Capture headings, paragraphs, lists, and explanations. Ignore names of doctors, personal information, author lists, institutional details, and any irrelevant metadata.\n2. **Remove noise and artifacts.** Eliminate OCR errors, visual artifacts, duplicated phrases, page numbers, headers, footers, and references to individuals or organizations.\n3. **Structure and normalize content.**\n     * Reconstruct broken sentences and paragraphs.\n     * Maintain the original hierarchy of chapters, sections, and sub-sections.\n     * Preserve bullet points, numbered lists, and code blocks.\n     * Remove any content that is not useful for learning, summarization, or quiz creation.\n4. **Final output:** Provide ONLY the cleaned, smart, and educationally useful text content of the document. Do not include names, personal info, or commentary. Do not summarize or interpret, just clean and filter the text.\n\n**Output format:** Return the full, uninterpreted, smart text in a single, well-formatted string, ready for use in summaries and quizzes.` },
-                { inlineData: { mimeType: file.mimetype, data: base64 } }
-            ] }],
+            contents: [{
+                parts: [
+                    { text: `You are an expert educational document cleaning and intelligent text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and highly useful text version of its content for learning, summarization, and quiz generation.\n\n**Instructions:**\n1. **Extract all educationally relevant text.** Capture headings, paragraphs, lists, and explanations. Ignore names of doctors, personal information, author lists, institutional details, and any irrelevant metadata.\n2. **Remove noise and artifacts.** Eliminate OCR errors, visual artifacts, duplicated phrases, page numbers, headers, footers, and references to individuals or organizations.\n3. **Structure and normalize content.**\n     * Reconstruct broken sentences and paragraphs.\n     * Maintain the original hierarchy of chapters, sections, and sub-sections.\n     * Preserve bullet points, numbered lists, and code blocks.\n     * Remove any content that is not useful for learning, summarization, or quiz creation.\n4. **Final output:** Provide ONLY the cleaned, smart, and educationally useful text content of the document. Do not include names, personal info, or commentary. Do not summarize or interpret, just clean and filter the text.\n\n**Output format:** Return the full, uninterpreted, smart text in a single, well-formatted string, ready for use in summaries and quizzes.` },
+                    { inlineData: { mimeType: file.mimetype, data: base64 } }
+                ]
+            }],
             generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
         };
         if (sendEventToUser) {
-            try { sendProgressEvent(user._id.toString(), 25, "Starting content extraction"); } catch {}
+            try { sendProgressEvent(user._id.toString(), 25, "Starting content extraction"); } catch { }
         }
         const response = await retryGeminiApiCall(requestBody);
         const data = await response.json();
         if (sendEventToUser) {
-            try { sendProgressEvent(user._id.toString(), 50, "Extraction service responded"); } catch {}
+            try { sendProgressEvent(user._id.toString(), 50, "Extraction service responded"); } catch { }
         }
         const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         chapter = await ChapterModel.create({
@@ -91,8 +97,11 @@ export const createChapterService = async (
             await CacheHelper.invalidateChaptersList(folderId, affectedUsers);
             const contentKey = CacheKeys.getChapterContentKey(chapter._id.toString());
             await CacheHelper.delete(contentKey);
+
+            // Invalidate profile cache so totalChapters updates
+            await CacheHelper.delete(CacheKeys.getUserProfileKey(folder.ownerId.toString()));
             if (sendEventToUser) {
-                try { sendProgressEvent(user._id.toString(), 75, "Content extraction and cache update completed", { chapterId: chapter._id.toString() }); } catch {}
+                try { sendProgressEvent(user._id.toString(), 75, "Content extraction and cache update completed", { chapterId: chapter._id.toString() }); } catch { }
             }
         }
         return { chapter, extractedText };

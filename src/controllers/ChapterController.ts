@@ -1,5 +1,6 @@
 import asyncWrapper from "../middleware/asyncwrapper";
 import { createChapterService, deleteChapterService, getChapterContentService, getChaptersService } from "../services/chapterService";
+import { ProfileService } from "../services/profileService";
 import ErrorHandler from "../utils/error";
 import { sendEventToUser } from "./sseController";
 const createchapter = asyncWrapper(async (req, res, next) => {
@@ -7,7 +8,7 @@ const createchapter = asyncWrapper(async (req, res, next) => {
         let result;
         let chapterObj;
         let chapterResponse;
-         if (req.body.contentType === "application/pdf" || req.file) {
+        if (req.body.contentType === "application/pdf" || req.file) {
             result = await createChapterService(req.user, req.body, req.file, sendEventToUser);
             chapterObj = typeof result.chapter.toObject === 'function' ? result.chapter.toObject() : result.chapter;
             chapterResponse = {
@@ -51,6 +52,20 @@ const getchapters = asyncWrapper(async (req, res, next) => {
 const getchaptercontent = asyncWrapper(async (req, res, next) => {
     try {
         const result = await getChapterContentService(req.user, req.params.chapterId);
+
+        // Track chapter access in activity log
+        try {
+            console.log(`[ChapterController] Logging chapter view for user ${req.user._id}`);
+            await ProfileService.logDailyActivity(req.user._id.toString(), 'chapter', {
+                chapterId: req.params.chapterId
+            });
+            await ProfileService.updateStreak(req.user._id.toString());
+            console.log(`[ChapterController] ✅ Chapter activity logged`);
+        } catch (e) {
+            console.error("❌ [ChapterController] Error logging chapter activity:", e);
+            console.error((e as Error).stack);
+        }
+
         res.status(200).json({
             success: true,
             message: result.cached ? "Chapter content retrieved from cache" : "Chapter content retrieved successfully",
@@ -72,7 +87,7 @@ const deletechapter = asyncWrapper(async (req, res, next) => {
             message: result.message,
         });
     } catch (err) {
-        
+
         next(err);
     }
 });

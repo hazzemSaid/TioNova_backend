@@ -75,7 +75,7 @@ const generateTokens = (user: any) => {
 const createUserResponse = async (user: any, accessToken: string, refreshToken: string) => {
 	// Fetch profile data
 	let profile = await ProfileService.getProfile(user._id.toString());
-	
+
 	return {
 		success: true,
 		user: {
@@ -134,8 +134,8 @@ const register = asyncWrapper(async (req, res, next) => {
 		try {
 			await AnalysisService.initializeAnalysis(newUser._id.toString());
 			await ProfileService.initializeProfile(
-				newUser._id.toString(), 
-				newUser.username, 
+				newUser._id.toString(),
+				newUser.username,
 				(newUser as any).profilePicture
 			);
 		} catch (e) {
@@ -197,6 +197,17 @@ const verifyEmail = asyncWrapper(async (req, res, next) => {
 	const { accessToken, refreshToken } = generateTokens(user);
 	user.refreshtoken = await hash(refreshToken);
 	await user.save();
+
+	// ✅ Ensure profile exists
+	try {
+		await ProfileService.initializeProfile(
+			user._id.toString(),
+			user.username,
+			(user as any).profilePicture
+		);
+	} catch (e) {
+		console.error("Error initializing profile on verify:", e);
+	}
 
 	const response = await createUserResponse(user, accessToken, refreshToken);
 	return res.status(200).json({
@@ -275,6 +286,17 @@ const login = asyncWrapper(async (req, res, next) => {
 	user.refreshtoken = await hash(refreshToken);
 	await user.save();
 
+	// ✅ Ensure profile exists (for legacy users)
+	try {
+		await ProfileService.initializeProfile(
+			user._id.toString(),
+			user.username,
+			(user as any).profilePicture
+		);
+	} catch (e) {
+		console.error("Error initializing profile on login:", e);
+	}
+
 	const response = await createUserResponse(user, accessToken, refreshToken);
 	return res.status(200).json(response);
 });
@@ -328,7 +350,7 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 
 	// Accept both `token` and `idToken` (iOS clients commonly send `idToken`)
 	const token = req.body.token || req.body.idToken;
-	
+
 	try {
 		let payload;
 		let isAccessToken = false;
@@ -343,16 +365,16 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 		} catch (idTokenError) {
 			// If ID token verification fails, try as access token (for web clients)
 			console.log('⚠️ ID token verification failed, trying as access token...');
-			
+
 			try {
 				const response = await fetch(
 					`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${token}`
 				);
-				
+
 				if (!response.ok) {
 					throw ErrorHandler.createError(`Failed to fetch user info: ${response.statusText}`, 401);
 				}
-				
+
 				payload = await response.json();
 				isAccessToken = true;
 				console.log('✅ Verified as access token');
@@ -393,6 +415,17 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 			user.refreshtoken = await hash(refreshToken);
 			await user.save();
 
+			// ✅ Ensure profile exists (for legacy users logging in with Google)
+			try {
+				await ProfileService.initializeProfile(
+					user._id.toString(),
+					user.username,
+					(user as any).profilePicture
+				);
+			} catch (e) {
+				console.error("Error initializing profile on google login:", e);
+			}
+
 			console.log(`✅ User logged in: ${email}`);
 			const response = await createUserResponse(user, accessToken, refreshToken);
 			return res.status(200).json(response);
@@ -414,8 +447,8 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 			try {
 				await AnalysisService.initializeAnalysis(user._id.toString());
 				await ProfileService.initializeProfile(
-					user._id.toString(), 
-					user.username, 
+					user._id.toString(),
+					user.username,
 					(user as any).profilePicture
 				);
 			} catch (e) {

@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import ProfileController from "../controllers/ProfileController";
 import verifyToken from "../middleware/verifyToken";
+import { preferencesValidation } from "../utils/validation";
 
 const profileRouter = express.Router();
 
@@ -26,7 +27,6 @@ profileRouter.put("/profile", verifyToken, upload.single('profilePicture'), Prof
 profileRouter.get("/profile/preferences", verifyToken, ProfileController.getPreferences);
 
 // Update user preferences
-import { preferencesValidation } from "../utils/validation";
 profileRouter.patch("/profile/preferences", verifyToken, preferencesValidation, ProfileController.updatePreferences);
 profileRouter.get("/profile/:userId", ProfileController.getPublicProfile);
 

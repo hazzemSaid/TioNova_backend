@@ -1,4 +1,6 @@
+import { log } from "node:console";
 import asyncWrapper from "../middleware/asyncwrapper";
+import { IPreferences } from "../models/PreferencesModel";
 import ProfileModel from "../models/profileModel";
 import UserModel from "../models/UserModel";
 import { ProfileService } from "../services/profileService";
@@ -6,21 +8,37 @@ import { uploadToCloudinary } from "../utils/cloudinaryService";
 import ErrorHandler from "../utils/error";
   const getPreferences = asyncWrapper(async (req, res, next) => {
         const userId = req.user._id || req.user.id;
-        const preferences = await ProfileService.getPreferences(userId);
+        
+        const preferences: IPreferences | null = await ProfileService.getPreferences(userId);
+        log("User preferences:", preferences);
         if (!preferences) {
             return res.status(404).json({ success: false, error: "Preferences not found", statusCode: 404 });
         }
         res.status(200).json({ success: true, data: preferences });
     });
-      const updatePreferences = asyncWrapper(async (req, res, next) => {
-        const userId = req.user._id || req.user.id;
-        const preferences = req.body;
-        const updated = await ProfileService.updatePreferences(userId, preferences);
-        if (!updated) {
-            return res.status(404).json({ success: false, error: "Preferences not found", statusCode: 404 });
-        }
-        res.status(200).json({ success: true, data: updated });
-    });
+const { validationResult } = require("express-validator");
+const updatePreferences = asyncWrapper(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({
+            success: false,
+            error: errors.array(),
+            statusCode: 400
+        });
+    }
+    const userId = req.user._id || req.user.id;
+    const preferences = req.body;
+    const updated = await ProfileService.updatePreferences(userId, preferences);
+    // If new preferences were created, save preferencesId in profile
+    if (updated && updated._id) {
+        await ProfileModel.findOneAndUpdate(
+            { userId },
+            { preferencesId: updated._id },
+            { new: true }
+        );
+    }
+    res.status(200).json({ success: true, data: updated });
+});
 const getProfile = asyncWrapper(async (req, res, next) => {
     const userId = req.user._id || req.user.id;
     

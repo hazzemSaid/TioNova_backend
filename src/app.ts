@@ -1,6 +1,8 @@
 import cors from "cors";
 import * as dotenv from "dotenv";
 import express, { NextFunction, Request, Response } from "express";
+import morgan from "morgan";
+import sseRouter from "../api/sseRouter";
 import { connectDB } from "./database/mongodb";
 import analysisRouter from "./routers/analysisRouter";
 import ChapterRouter from "./routers/ChapterRouter";
@@ -15,13 +17,18 @@ import ShareRouter from "./routers/ShareRouter";
 import SummaryRouter from "./routers/SummaryRouter";
 import UserRoute from "./routers/UserRouter";
 import { ICustomError } from "./utils/error";
-import sseRouter from "../api/sseRouter";
 // Load env
 dotenv.config();
+// Enable morgan logging in development
 
 const port = process.env.PORT || 3000;
 const app = express();
-
+morgan.token("body", (req:any) => JSON.stringify(req.body));
+app.use(
+  morgan(":method :url :status :response-time ms - :body", {
+    skip: (req, res) => res.statusCode < 400,
+  })
+);
 app.use(express.json());
 app.use(express.static("static"));
 app.use(

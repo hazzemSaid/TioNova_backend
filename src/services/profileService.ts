@@ -9,31 +9,41 @@ export interface UserPreferences {
     reminderTimes?: string[];
     contentDifficulty?: "easy" | "medium" | "hard" | "progressive";
 }
+import { default as Preferences, default as PreferencesModel } from "../models/PreferencesModel";
 import ProfileModel from "../models/profileModel";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
-
 export class ProfileService {
         /**
          * Get preferences for a user
          */
         static async getPreferences(userId: string) {
-            const profile = await ProfileModel.findOne({ userId });
-            return profile?.preferences || null;
+            const preferences = await Preferences.findOne({ userId });
+            if (!preferences) return null;
+
+            return preferences;
         }
 
-        /**
-         * Update preferences for a user
-         */
-        static async updatePreferences(userId: string, preferences: UserPreferences) {
-            const profile = await ProfileModel.findOneAndUpdate(
-                { userId },
-                { $set: { preferences } },
+    /**
+     * Update preferences for a user
+     */
+    static async updatePreferences(userId: string, preferences: UserPreferences) {
+        const preferencesDoc = await PreferencesModel.findOne({ userId });
+        let updatedPreferences;
+        if (preferencesDoc ) {
+            updatedPreferences = await PreferencesModel.findByIdAndUpdate(
+                preferencesDoc._id,
+                { $set: preferences },
                 { new: true }
             );
-            // Optionally cache preferences here
-            return profile?.preferences || null;
+        } else {
+            updatedPreferences = await PreferencesModel.create({
+                userId,
+                ...preferences
+            });
         }
+        return updatedPreferences;
+    }
     /**
      * Initialize profile document for a new user
      */

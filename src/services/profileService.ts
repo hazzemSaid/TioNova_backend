@@ -257,10 +257,15 @@ export class ProfileService {
             // Update based on activity type
             switch (activityType) {
                 case 'chapter':
-                    if (metadata?.chapterId && !todayLog.chaptersStudied.some((id: any) => id.toString() === metadata.chapterId)) {
-                        // Limit to 100 unique chapters per day
-                        if (todayLog.chaptersStudied.length < 100) {
-                            todayLog.chaptersStudied.push(metadata.chapterId as any);
+                    if (metadata?.chapterId) {
+                        const isDuplicate = todayLog.chaptersStudied.some((id: any) => id.toString() === metadata.chapterId);
+                        console.log(`[ProfileService] Logging chapter ${metadata.chapterId}. Duplicate? ${isDuplicate}. Current count: ${todayLog.chaptersStudied.length}`);
+
+                        if (!isDuplicate) {
+                            // Limit to 100 unique chapters per day
+                            if (todayLog.chaptersStudied.length < 100) {
+                                todayLog.chaptersStudied.push(metadata.chapterId as any);
+                            }
                         }
                     }
                     break;

@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
+import FolderModel from "../models/FolderModel";
 import QuestionModel from "../models/QuestionModel";
 import QuizModel from "../models/QuizModel";
 import UserQuizStatusModel from "../models/UserQuizStatusModel";
@@ -392,9 +393,26 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
         });
         await ProfileService.updateAverageQuizScore(userId.toString(), scorePercent);
         await ProfileService.updateStreak(userId.toString());
-        console.log(`[QuizController] ✅ Profile updated successfully`);
+
+        // ✅ Invalidate folder cache to update attemptedCount/passedCount
+        const chapter = await ChapterModel.findById(chapterId);
+        if (chapter) {
+            const folder = await FolderModel.findById(chapter.folderId);
+            if (folder) {
+                const affectedUsers = [
+                    folder.ownerId.toString(),
+                    ...(folder.sharedWith || []).map((id: any) => id.toString()),
+                ];
+                await Promise.all(
+                    affectedUsers.map(uid => CacheHelper.invalidateUserFolders(uid))
+                );
+                console.log(`[QuizController] Invalidated folder cache for ${affectedUsers.length} users`);
+            }
+        }
+
+        console.log(`[QuizController] ✅ Profile and Cache updated successfully`);
     } catch (e) {
-        console.error("❌ [QuizController] CRITICAL ERROR updating analysis/profile:");
+        console.error("❌ [QuizController] CRITICAL ERROR updating analysis/profile/cache:");
         console.error(e);
         console.error((e as Error).stack);
     }

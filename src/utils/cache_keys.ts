@@ -35,6 +35,7 @@ export class CacheKeys {
             this.getChapterMetadataKey(chapterId),
             this.getSummaryKey(chapterId),
             this.getQuizKey(chapterId),
+            this.getMindmapKey(chapterId),
         ];
     }
 
@@ -118,20 +119,20 @@ export class CacheKeys {
     }
 
     // ==================== Helper Methods ====================
-    
+
     /**
      * Invalidate all caches related to a chapter
      */
     static getChapterInvalidationKeys(chapterId: string, folderId?: string, userIds?: string[]): string[] {
         const keys = this.getAllChapterKeys(chapterId);
-        
+
         // Add chapters list keys for affected users
         if (folderId && userIds && userIds.length > 0) {
             userIds.forEach(userId => {
                 keys.push(this.getChaptersListKey(folderId, userId));
             });
         }
-        
+
         return keys;
     }
 
@@ -140,21 +141,21 @@ export class CacheKeys {
      */
     static getFolderInvalidationKeys(folder: any): string[] {
         const keys: string[] = [];
-        
+
         // Owner's folder list
         keys.push(this.getFoldersListKey(folder.ownerId.toString()));
-        
+
         // Shared users' folder lists
         if (Array.isArray(folder.sharedWith)) {
             folder.sharedWith.forEach((userId: any) => {
                 keys.push(this.getFoldersListKey(userId.toString()));
             });
         }
-        
+
         // Folder metadata
         keys.push(this.getFolderMetadataKey(folder._id.toString()));
         keys.push(this.getFolderSharedUsersKey(folder._id.toString()));
-        
+
         return keys;
     }
 

@@ -5,14 +5,15 @@ import ChapterModel from "../models/ChapterModel";
 import FolderModel from "../models/FolderModel";
 import MindmapModel from "../models/MindmapModel";
 import SummaryModel from "../models/SummaryModel";
+import PreferencesModel from "../models/PreferencesModel";
 import { ProfileService } from "../services/profileService";
 
 const getAnalysis = asyncWrapper(async (req, res, next) => {
 	const userId = req.user._id || req.user.id;
-	
+
 	// Fetch fresh analysis data from database (NO CACHING)
 	let analysisData = await AnalysisModel.findOne({ userId }).lean();
-	
+
 	// If no analysis document exists, create one
 	if (!analysisData) {
 		const newAnalysis = await AnalysisModel.create({
@@ -25,18 +26,20 @@ const getAnalysis = asyncWrapper(async (req, res, next) => {
 			lastSummary: null,
 			avgScore: 0,
 		});
-		
+
 		analysisData = newAnalysis.toObject();
 	}
-	
+
+	const preferences = await PreferencesModel.findOne({ userId }).lean();
+
 	// Fetch and populate recentChapters with full details (like getchapters endpoint)
 	let recentChapters = [];
 	if (analysisData.recentChapters && analysisData.recentChapters.length > 0) {
 		recentChapters = await ChapterModel.aggregate([
-			{ 
-				$match: { 
-					_id: { $in: analysisData.recentChapters.map(id => new mongoose.Types.ObjectId(id)) } 
-				} 
+			{
+				$match: {
+					_id: { $in: analysisData.recentChapters.map(id => new mongoose.Types.ObjectId(id)) }
+				}
 			},
 			{
 				$lookup: {
@@ -85,7 +88,7 @@ const getAnalysis = asyncWrapper(async (req, res, next) => {
 			},
 		]);
 	}
-	
+
 	// Fetch and populate recentFolders with full details (like getfolders endpoint)
 	let recentFolders = [];
 	if (analysisData.recentFolders && analysisData.recentFolders.length > 0) {
@@ -195,16 +198,16 @@ const getAnalysis = asyncWrapper(async (req, res, next) => {
 			},
 		]);
 	}
-	
+
 	// Fetch and populate lastMindmaps with full details (like getmindmap endpoint)
 	let lastMindmaps: any[] = [];
 	if (analysisData.lastMindmaps && analysisData.lastMindmaps.length > 0) {
 		const rawMindmaps = await MindmapModel.find({
 			_id: { $in: analysisData.lastMindmaps }
 		})
-		.populate('nodes')
-		.lean();
-		
+			.populate('nodes')
+			.lean();
+
 		// Ensure chapterId remains as ObjectId (not populated)
 		lastMindmaps = rawMindmaps.map((mindmap: any) => {
 			// If chapterId was somehow populated, extract just the _id
@@ -217,13 +220,13 @@ const getAnalysis = asyncWrapper(async (req, res, next) => {
 			return mindmap;
 		});
 	}
-	
+
 	// Fetch and populate lastSummary with full details (like getChapterSummary endpoint)
 	let lastSummary: any = null;
 	if (analysisData.lastSummary) {
 		const rawSummary = await SummaryModel.findById(analysisData.lastSummary)
 			.lean();
-		
+
 		if (rawSummary) {
 			// Ensure chapterId remains as ObjectId (not populated)
 			if (rawSummary.chapterId && typeof rawSummary.chapterId === 'object' && (rawSummary.chapterId as any)._id) {
@@ -236,10 +239,21 @@ const getAnalysis = asyncWrapper(async (req, res, next) => {
 			}
 		}
 	}
-	
+
 	// Fetch profile data (streak, totals, etc.)
 	const profileData = await ProfileService.getProfile(userId.toString());
-	
+
+	console.log(`[AnalysisController] Profile data for user ${userId}:`, {
+		todayChapters: profileData?.overview?.today?.chapters,
+		avgScore: profileData?.averageQuizScore
+	});
+
+	const currentChapters = profileData?.overview?.today?.chapters || 0;
+	const targetChapters = preferences?.studyPerDay || 2;
+	const progressPercentage = targetChapters > 0 
+		? Math.min(Math.round((currentChapters / targetChapters) * 100), 100)
+		: 0;
+
 	res.status(200).json({
 		success: true,
 		data: {
@@ -249,8 +263,8 @@ const getAnalysis = asyncWrapper(async (req, res, next) => {
 			lastMindmaps,
 			lastSummary,
 			lastRank: analysisData.lastRank,
-			totalChapters: analysisData.totalChapters,
-			avgScore: analysisData.avgScore,
+			totalChapters: profileData?.overview?.today?.chapters || 0,
+			avgScore: profileData?.averageQuizScore || 0,
 			profile: {
 				streak: profileData?.streak || 0,
 				lastActiveDate: profileData?.lastActiveDate || null,
@@ -258,6 +272,25 @@ const getAnalysis = asyncWrapper(async (req, res, next) => {
 				totalMindmapsCreated: profileData?.totalMindmapsCreated || 0,
 				totalSummariesCreated: profileData?.totalSummariesCreated || 0,
 				averageQuizScore: profileData?.averageQuizScore || 0
+			},
+			todayProgress: {
+				current: currentChapters,
+				target: targetChapters,
+				percentage: progressPercentage,
+				preferences: preferences ? {
+					studyPerDay: preferences.studyPerDay || 2,
+					preferredStudyTimes: preferences.preferredStudyTimes,
+					dailyTimeCommitmentMinutes: preferences.dailyTimeCommitmentMinutes,
+					daysPerWeek: preferences.daysPerWeek,
+					goals: preferences.goals,
+					reminderEnabled: preferences.reminderEnabled,
+					reminderTimes: preferences.reminderTimes,
+					contentDifficulty: preferences.contentDifficulty
+				} : null,
+				actual: {
+					chapters: profileData?.overview?.today?.chapters || 0,
+					quizzes: profileData?.overview?.today?.quizzes || 0
+				}
 			}
 		},
 	});

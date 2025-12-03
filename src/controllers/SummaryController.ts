@@ -179,6 +179,7 @@ Guidelines:
 
 const getChapterSummary = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.params;
+    const user = req.user as any;
     const chapter = await ChapterModel.findById(chapterId);
 
     if (!chapter) {
@@ -189,6 +190,13 @@ const getChapterSummary = asyncWrapper(async (req, res, next) => {
 
     if (!summary) {
         return next(ErrorHandler.createError("Summary not found", 404));
+    }
+
+    // Track summary access in analysis
+    try {
+        await AnalysisService.updateLastSummary(user._id.toString(), summary._id.toString());
+    } catch (e) {
+        console.error("Error tracking summary access:", e);
     }
 
     res.status(200).json({

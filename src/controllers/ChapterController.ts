@@ -1,15 +1,16 @@
 import asyncWrapper from "../middleware/asyncwrapper";
-import { createChapterService, deleteChapterService, getChapterContentService, getChaptersService } from "../services/chapterService";
+import { AnalysisService } from "../services/analysisService";
+import { createChapterService, deleteChapterService, getChapterContentService, getChaptersService, updateChapterService } from "../services/chapterService";
 import { ProfileService } from "../services/profileService";
 import ErrorHandler from "../utils/error";
-import { sendEventToUser } from "./sseController";
 const createchapter = asyncWrapper(async (req, res, next) => {
     try {
         let result;
         let chapterObj;
         let chapterResponse;
         if (req.body.contentType === "application/pdf" || req.file) {
-            result = await createChapterService(req.user, req.body, req.file, sendEventToUser);
+            // No longer passing sendEventToUser
+            result = await createChapterService(req.user, req.body, req.file);
             chapterObj = typeof result.chapter.toObject === 'function' ? result.chapter.toObject() : result.chapter;
             chapterResponse = {
                 _id: chapterObj._id,
@@ -32,6 +33,22 @@ const createchapter = asyncWrapper(async (req, res, next) => {
             return next(ErrorHandler.createError("Unsupported content type", 400));
         }
     } catch (err) {
+        // If an error occurs that wasn't caught in service (e.g. initial validation), 
+        // we should probably mark the firebase job as failed if we can?
+        // But we might not have initialized it yet or don't want to complicate controller.
+        // The service handles most errors by creating a chapter anyway (fallback).
+        // Real critical errors will go to next(err).
+
+        // Optional: Try to fail the firebase job if user ID is available
+        if (req.user && req.user._id) {
+            const { failChapterJob } = await import("../services/firebaseChapterService");
+            try {
+                await failChapterJob(req.user._id.toString(), (err as any).message || "Unknown error");
+            } catch (firebaseErr) {
+                console.error("Failed to update Firebase job status on error:", firebaseErr);
+            }
+        }
+
         next(err);
     }
 });
@@ -39,6 +56,14 @@ const createchapter = asyncWrapper(async (req, res, next) => {
 const getchapters = asyncWrapper(async (req, res, next) => {
     try {
         const chapters = await getChaptersService(req.user, req.params.folderId);
+
+        // Track folder access in analysis
+        try {
+            await AnalysisService.updateRecentFolders(req.user._id.toString(), req.params.folderId);
+        } catch (e) {
+            console.error("Error tracking folder access:", e);
+        }
+
         res.status(200).json({
             success: true,
             message: "Chapters retrieved successfully",
@@ -53,9 +78,10 @@ const getchaptercontent = asyncWrapper(async (req, res, next) => {
     try {
         const result = await getChapterContentService(req.user, req.params.chapterId);
 
-        // Track chapter access in activity log
+        // Track chapter access in profile and analysis
         try {
             console.log(`[ChapterController] Logging chapter view for user ${req.user._id}`);
+            await AnalysisService.updateRecentChapters(req.user._id.toString(), req.params.chapterId);
             await ProfileService.logDailyActivity(req.user._id.toString(), 'chapter', {
                 chapterId: req.params.chapterId
             });
@@ -78,6 +104,19 @@ const getchaptercontent = asyncWrapper(async (req, res, next) => {
     }
 });
 
+const updatechapter = asyncWrapper(async (req, res, next) => {
+    try {
+        const { chapterId } = req.params;
+        const result = await updateChapterService(req.user, chapterId, req.body);
+        res.status(200).json({
+            success: result.success,
+            message: result.message,
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 const deletechapter = asyncWrapper(async (req, res, next) => {
     try {
         const { chapterId } = req.params;
@@ -91,12 +130,12 @@ const deletechapter = asyncWrapper(async (req, res, next) => {
         next(err);
     }
 });
-
 const ChapterController = {
     createchapter,
     getchapters,
     getchaptercontent,
     deletechapter,
+    updatechapter,
 };
 
 export default ChapterController;

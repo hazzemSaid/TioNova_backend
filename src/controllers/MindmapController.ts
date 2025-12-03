@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import asyncWrapper from "../middleware/asyncwrapper";
 import ChapterModel from "../models/ChapterModel";
 import MindmapModel from "../models/MindmapModel";
@@ -267,58 +268,122 @@ Guidelines:
     });
 });
 const saveMindmap = asyncWrapper(async (req, res, next) => {
-    const { _id, title, chapterId, nodes } = req.body;
+    const { _id, chapterId, title, nodes, newNodes } = req.body;
     const user = req.user;
+
+    if (!_id) {
+        return next(ErrorHandler.createError("Mindmap ID is required", 400));
+    }
+
+    // Find the mindmap
     const mindmap = await MindmapModel.findById(_id);
     if (!mindmap) {
-        //next with error handling 
         return next(ErrorHandler.createError("Mindmap not found", 404));
     }
-    if (mindmap.chapterId.toString() !== chapterId) {
+
+    // Validate chapter ID matches
+    if (chapterId && mindmap.chapterId.toString() !== chapterId) {
         return next(ErrorHandler.createError("Chapter ID mismatch the Mind Map", 400));
     }
 
-    // Update mindmap fields
-    if (title) mindmap.title = title;
-
-    // Validate and update nodes to ensure they conform to NodeModel schema
-    if (nodes && Array.isArray(nodes)) {
-        // Validate each node has required fields matching NodeModel schema
-        for (const node of nodes) {
-            if (!node.title) {
-                return next(ErrorHandler.createError("Each node must have a title", 400));
-            }
-            // Ensure node structure matches NodeModel schema
-            const validatedNode: any = {
-                title: node.title,
-                icon: node.icon || "📘",
-                color: node.color || "#3B82F6",
-                content: node.content || "",
-                children: Array.isArray(node.children) ? node.children : [],
-                isRoot: node.isRoot || false
-            };
-
-            // Update or create node in database
-            if (node._id) {
-                await NodeModel.findByIdAndUpdate(node._id, validatedNode);
-            } else {
-                const newNode = await NodeModel.create(validatedNode);
-                node._id = newNode._id;
-            }
-        }
-        mindmap.nodes = nodes.map((n: any) => n._id);
+    // Update mindmap title if provided
+    if (title) {
+        mindmap.title = title;
     }
 
     mindmap.updatedBy = user._id;
 
+    // Process new nodes if provided
+    if (newNodes && Array.isArray(newNodes) && newNodes.length > 0) {
+        for (const newNode of newNodes) {
+            if (!newNode.title) {
+                return next(ErrorHandler.createError("Each new node must have a title", 400));
+            }
+
+            if (!newNode.parentId) {
+                return next(ErrorHandler.createError("Each new node must have a parentId", 400));
+            }
+
+            // Validate parent node exists
+            const parentNode = await NodeModel.findById(newNode.parentId);
+            if (!parentNode) {
+                return next(ErrorHandler.createError(`Parent node ${newNode.parentId} not found`, 404));
+            }
+
+            // Create new node
+            const validatedNode: any = {
+                title: newNode.title,
+                icon: newNode.icon || "📘",
+                color: newNode.color || "#3B82F6",
+                content: newNode.content || "",
+                children: [],
+                isRoot: false
+            };
+
+            const createdNode = await NodeModel.create(validatedNode);
+
+            // Add new node to mindmap's nodes array
+            mindmap.nodes.push(createdNode._id);
+
+            // Update parent node by modifying and saving
+
+            const childObjectId = new mongoose.Types.ObjectId(createdNode._id as any);
+
+            // Only append if not already there to avoid duplicates
+            if (!parentNode.children.some(childId => childId.equals(childObjectId))) {
+                parentNode.children.push(childObjectId);
+                parentNode.markModified("children");
+                const savedParent = await parentNode.save();
+            }
+        }
+    }
+
+    // Update existing nodes if provided
+    if (nodes && Array.isArray(nodes) && nodes.length > 0) {
+        for (const node of nodes) {
+            if (!node._id) {
+                continue; // Skip nodes without ID (they should be in newNodes)
+            }
+
+            if (!node.title) {
+                return next(ErrorHandler.createError("Each node must have a title", 400));
+            }
+
+            const validatedNode: any = {
+                title: node.title
+            };
+
+            if (node.icon !== undefined) {
+                validatedNode.icon = node.icon;
+            }
+
+            if (node.color !== undefined) {
+                validatedNode.color = node.color;
+            }
+
+            if (node.content !== undefined) {
+                validatedNode.content = node.content;
+            }
+
+            if (node.isRoot !== undefined) {
+                validatedNode.isRoot = node.isRoot;
+            }
+
+            await NodeModel.findByIdAndUpdate(node._id, validatedNode);
+        }
+    }
+
+    // Save mindmap
     await mindmap.save();
+
+    // Populate nodes before returning
+    await mindmap.populate('nodes');
 
     return res.status(200).json({
         success: true,
         message: "Mindmap updated successfully",
-        data: mindmap,
+        data: mindmap
     });
-
 });
 const generatecontent = asyncWrapper(async (req, res, next) => {
     const { text, chapterId }: { text: string; chapterId: string } = req.body;
@@ -461,6 +526,13 @@ const getmindmap = asyncWrapper(async (req, res, next) => {
 
     if (!mindmapModel) {
         return next(ErrorHandler.createError("Mindmap not found", 404));
+    }
+
+    // Track mindmap access in analysis
+    try {
+        await AnalysisService.updateLastMindmap(user._id.toString(), mindmapModel._id.toString());
+    } catch (e) {
+        console.error("Error tracking mindmap access:", e);
     }
 
     return res.status(200).json({

@@ -13,6 +13,7 @@ const upload = multer({ storage });
 ChapterRouter.post("/createchapter", verifyToken, upload.single("file"), ChapterController.createchapter);
 ChapterRouter.get("/getchapters/:folderId", verifyToken, ChapterController.getchapters);
 ChapterRouter.get("/getchaptercontent/:chapterId", verifyToken, ChapterController.getchaptercontent);
+ChapterRouter.patch("/updatechapter/:chapterId", verifyToken, ChapterController.updatechapter);
 ChapterRouter.delete("/deletechapter/:chapterId", verifyToken, ChapterController.deletechapter);
 
 export default ChapterRouter;

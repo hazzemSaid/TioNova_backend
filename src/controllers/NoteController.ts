@@ -1,8 +1,5 @@
-import mongoose from "mongoose";
 import asyncWrapper from "../middleware/asyncwrapper";
-import ChapterModel from "../models/ChapterModel";
-import NoteModel from "../models/NoteModel";
-import { uploadToCloudinary } from "../utils/cloudinaryService";
+import * as noteService from "../services/noteService";
 import ErrorHandler from "../utils/error";
 
 /**
@@ -11,22 +8,13 @@ import ErrorHandler from "../utils/error";
  */
 const getNotesByChapterId = asyncWrapper(async (req, res, next) => {
 	const { chapterId } = req.params;
+	const user = req.user;
 
-	// Validate chapter ID
-	if (!mongoose.Types.ObjectId.isValid(chapterId)) {
-		return next(ErrorHandler.createError("Invalid chapter ID", 400));
+	if (!user) {
+		return next(ErrorHandler.createError("User not authenticated", 401));
 	}
 
-	// Check if chapter exists
-	const chapter = await ChapterModel.findById(chapterId);
-	if (!chapter) {
-		return next(ErrorHandler.createError("Chapter not found", 404));
-	}
-
-	// Get all notes for this chapter
-	const notes = await NoteModel.find({ chapterId })
-		.populate('createdBy', 'name email')
-		.sort({ createdAt: -1 });
+	const notes = await noteService.getNotesByChapterIdService(user, chapterId);
 
 	res.status(200).json({
 		success: true,
@@ -43,37 +31,13 @@ const getNotesByChapterId = asyncWrapper(async (req, res, next) => {
  */
 const addTextNote = asyncWrapper(async (req, res, next) => {
 	const { title, chapterId, textContent, meta } = req.body;
-	const userId = req.user?._id;
+	const user = req.user;
 
-	if (!userId) {
+	if (!user) {
 		return next(ErrorHandler.createError("User not authenticated", 401));
 	}
 
-	if (!title || !chapterId || !textContent) {
-		return next(ErrorHandler.createError("Title, chapter ID, and text content are required", 400));
-	}
-
-	if (!mongoose.Types.ObjectId.isValid(chapterId)) {
-		return next(ErrorHandler.createError("Invalid chapter ID", 400));
-	}
-
-	const chapter = await ChapterModel.findById(chapterId);
-	if (!chapter) {
-		return next(ErrorHandler.createError("Chapter not found", 404));
-	}
-
-	const note = await NoteModel.create({
-		title,
-		chapterId,
-		createdBy: userId,
-		rawData: {
-			type: 'text',
-			data: textContent,
-			meta: meta || {}
-		}
-	});
-
-	await note.populate('createdBy', 'name email');
+	const note = await noteService.addTextNoteService(user, { title, chapterId, textContent, meta });
 
 	res.status(201).json({
 		success: true,
@@ -87,53 +51,18 @@ const addTextNote = asyncWrapper(async (req, res, next) => {
  */
 const addImageNote = asyncWrapper(async (req, res, next) => {
 	const { title, chapterId, meta } = req.body;
-	const userId = req.user?._id;
+	const user = req.user;
 	const file = req.file;
 
-	if (!userId) {
+	if (!user) {
 		return next(ErrorHandler.createError("User not authenticated", 401));
-	}
-
-	if (!title || !chapterId) {
-		return next(ErrorHandler.createError("Title and chapter ID are required", 400));
 	}
 
 	if (!file) {
 		return next(ErrorHandler.createError("Image file is required", 400));
 	}
 
-	if (!mongoose.Types.ObjectId.isValid(chapterId)) {
-		return next(ErrorHandler.createError("Invalid chapter ID", 400));
-	}
-
-	const chapter = await ChapterModel.findById(chapterId);
-	if (!chapter) {
-		return next(ErrorHandler.createError("Chapter not found", 404));
-	}
-
-	// Upload image to Cloudinary
-	const uploadResult = await uploadToCloudinary(file.buffer, 'notes/images');
-
-	const note = await NoteModel.create({
-		title,
-		chapterId,
-		createdBy: userId,
-		rawData: {
-			type: 'image',
-			data: uploadResult.secure_url,
-			meta: {
-				publicId: uploadResult.public_id,
-				format: uploadResult.format,
-				width: uploadResult.width,
-				height: uploadResult.height,
-				size: file.size,
-				originalName: file.originalname,
-				...JSON.parse(meta || '{}')
-			}
-		}
-	});
-
-	await note.populate('createdBy', 'name email');
+	const note = await noteService.addImageNoteService(user, { title, chapterId, meta }, file);
 
 	res.status(201).json({
 		success: true,
@@ -147,56 +76,43 @@ const addImageNote = asyncWrapper(async (req, res, next) => {
  */
 const addVoiceNote = asyncWrapper(async (req, res, next) => {
 	const { title, chapterId, meta } = req.body;
-	const userId = req.user?._id;
+	const user = req.user;
 	const file = req.file;
 
-	if (!userId) {
+	if (!user) {
 		return next(ErrorHandler.createError("User not authenticated", 401));
-	}
-
-	if (!title || !chapterId) {
-		return next(ErrorHandler.createError("Title and chapter ID are required", 400));
 	}
 
 	if (!file) {
 		return next(ErrorHandler.createError("Voice file is required", 400));
 	}
 
-	if (!mongoose.Types.ObjectId.isValid(chapterId)) {
-		return next(ErrorHandler.createError("Invalid chapter ID", 400));
-	}
-
-	const chapter = await ChapterModel.findById(chapterId);
-	if (!chapter) {
-		return next(ErrorHandler.createError("Chapter not found", 404));
-	}
-
-	// Upload voice to Cloudinary (supports audio files)
-	const uploadResult = await uploadToCloudinary(file.buffer, 'notes/voices', 'video'); // 'video' resource_type for audio
-
-	const note = await NoteModel.create({
-		title,
-		chapterId,
-		createdBy: userId,
-		rawData: {
-			type: 'voice',
-			data: uploadResult.secure_url,
-			meta: {
-				publicId: uploadResult.public_id,
-				format: uploadResult.format,
-				duration: uploadResult.duration,
-				size: file.size,
-				originalName: file.originalname,
-				...JSON.parse(meta || '{}')
-			}
-		}
-	});
-
-	await note.populate('createdBy', 'name email');
+	const note = await noteService.addVoiceNoteService(user, { title, chapterId, meta }, file);
 
 	res.status(201).json({
 		success: true,
 		data: { note }
+	});
+});
+
+/**
+ * Update a note
+ * @route PATCH /api/notes/:noteId
+ */
+const updateNote = asyncWrapper(async (req, res, next) => {
+	const { noteId } = req.params;
+	const { title, rawData } = req.body;
+	const user = req.user;
+
+	if (!user) {
+		return next(ErrorHandler.createError("User not authenticated", 401));
+	}
+
+	const updatedNote = await noteService.updateNoteService(user, noteId, { title, rawData });
+
+	res.status(200).json({
+		success: true,
+		data: { note: updatedNote }
 	});
 });
 
@@ -206,46 +122,15 @@ const addVoiceNote = asyncWrapper(async (req, res, next) => {
  */
 const deleteNote = asyncWrapper(async (req, res, next) => {
 	const { noteId } = req.params;
-	const userId = req.user?._id;
+	const user = req.user;
 
-	if (!userId) {
+	if (!user) {
 		return next(ErrorHandler.createError("User not authenticated", 401));
 	}
 
-	if (!mongoose.Types.ObjectId.isValid(noteId)) {
-		return next(ErrorHandler.createError("Invalid note ID", 400));
-	}
+	const result = await noteService.deleteNoteService(user, noteId);
 
-	const note = await NoteModel.findById(noteId);
-	if (!note) {
-		return next(ErrorHandler.createError("Note not found", 404));
-	}
-
-	if (note.createdBy.toString() !== userId.toString()) {
-		return next(ErrorHandler.createError("You are not authorized to delete this note", 403));
-	}
-
-	// Delete from Cloudinary if it's an image or voice note
-	if (note.rawData.type === 'image' || note.rawData.type === 'voice') {
-		const publicId = note.rawData.meta?.publicId;
-		if (publicId) {
-			try {
-				const cloudinary = require('cloudinary').v2;
-				await cloudinary.uploader.destroy(publicId, {
-					resource_type: note.rawData.type === 'voice' ? 'video' : 'image'
-				});
-			} catch (error) {
-				console.error('Error deleting from Cloudinary:', error);
-			}
-		}
-	}
-
-	await NoteModel.findByIdAndDelete(noteId);
-
-	res.status(200).json({
-		success: true,
-		message: "Note deleted successfully"
-	});
+	res.status(200).json(result);
 });
 
 const NoteController = {
@@ -253,6 +138,7 @@ const NoteController = {
 	addTextNote,
 	addImageNote,
 	addVoiceNote,
+	updateNote,
 	deleteNote
 };
 

@@ -14,6 +14,7 @@ NoteRouter.get("/notes/chapter/:chapterId", verifyToken, NoteController.getNotes
 NoteRouter.post("/notes/text", verifyToken, NoteController.addTextNote);
 NoteRouter.post("/notes/image", verifyToken, upload.single("file"), NoteController.addImageNote);
 NoteRouter.post("/notes/voice", verifyToken, upload.single("file"), NoteController.addVoiceNote);
+NoteRouter.patch("/notes/:noteId", verifyToken, NoteController.updateNote);
 NoteRouter.delete("/notes/:noteId", verifyToken, NoteController.deleteNote);
 
 export default NoteRouter;

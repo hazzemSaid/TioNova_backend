@@ -188,4 +188,9 @@ export class CacheKeys {
     static getAnalysisKey(userId: string): string {
         return `analysis:user:${userId}`;
     }
+
+    // ==================== Note Related Keys ====================
+    static getNotesListKey(chapterId: string, userId: string): string {
+        return `notes:list:chapter:${chapterId}:user:${userId}`;
+    }
 }

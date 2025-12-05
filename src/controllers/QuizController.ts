@@ -565,12 +565,248 @@ const quizhistory = asyncWrapper(async (req, res, next) => {
     });
 });
 
+const practiceMode = asyncWrapper(async (req, res, next) => {
+    const { chapterId } = req.body;
+
+    if (!chapterId) {
+        return next(ErrorHandler.createError("chapterId is required", 400));
+    }
+
+    let quiz: any = null;
+    let cachedQuestions: any[] = [];
+    let quizId: string | null = null;
+    let quizTitle: string = "";
+
+    try {
+        // ✅ Load from cache using helper
+        const cachedQuiz = await CacheHelper.getCachedQuiz(chapterId);
+
+        if (cachedQuiz) {
+            quizId = cachedQuiz.quizId;
+            quizTitle = cachedQuiz.title;
+            cachedQuestions = cachedQuiz.questions;
+        }
+
+        // ✅ Load from DB if cache empty - include answer and explanation for practice mode
+        if (cachedQuestions.length === 0) {
+            const existingQuiz = await QuizModel.findOne({ chapterId }).populate("questions");
+
+            if (existingQuiz) {
+                quiz = existingQuiz;
+                quizId = existingQuiz._id.toString();
+                quizTitle = existingQuiz.title;
+                cachedQuestions = existingQuiz.questions.map((q: any) => ({
+                    _id: q._id,
+                    question: q.question,
+                    options: q.options,
+                    answer: q.answer,
+                    explanation: q.explanation || "",
+                }));
+            }
+        }
+
+        // ✅ Generate new questions if less than 50
+        if (cachedQuestions.length < 50) {
+            const chapter = await ChapterModel.findById(chapterId);
+
+            if (!chapter) {
+                return next(ErrorHandler.createError("Chapter not found", 404));
+            }
+
+            const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
+
+            if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
+                return next(ErrorHandler.createError("Chapter content is missing", 400));
+            }
+
+            quizTitle = chapter.title;
+            const needed = 50 - cachedQuestions.length;
+            const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
+
+            const systemPrompt = `You are an AI assistant that creates multiple choice quizzes based on educational content.
+
+IMPORTANT INSTRUCTIONS:
+1. Read and analyze the provided chapter content carefully
+2. Generate exactly ${needed} new questions ONLY from the information contained in this specific chapter
+3. Questions must be directly related to the topics, concepts, and information present in the chapter content
+4. Do NOT create generic questions or questions from outside knowledge
+5. Each question should test understanding of specific content from the chapter
+6. Do NOT repeat any of the questions listed below
+
+Existing questions to avoid:
+${existingTexts}
+
+Requirements for each question:
+- Must be answerable using only information from the chapter
+- Should test key concepts, facts, or principles from the content
+- Include 4 distinct options (labeled a, b, c, d)
+- Only one option should be correct
+- Provide a clear explanation referencing the chapter content
+
+Output Format (JSON array only, no additional text):
+[
+  {
+    "question": "Your question text based on chapter content?",
+    "options": ["a) Option1", "b) Option2", "c) Option3", "d) Option4"],
+    "answer": "a",
+    "explanation": "Brief explanation referencing the chapter content."
+  }
+]`;
+
+            let rawText: string;
+
+            // ✅ Use Gemini API for all content types
+            const base64File = chapter.content.toString("base64");
+            const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+
+            let geminiPrompt: string;
+            if (hasOvercontent) {
+                geminiPrompt = `${systemPrompt}\n\nChapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
+            } else {
+                geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
+            }
+
+            const requestBody = {
+                contents: [{
+                    parts: hasOvercontent
+                        ? [{ text: geminiPrompt }]
+                        : [
+                            { text: geminiPrompt },
+                            { inlineData: { mimeType, data: base64File } }
+                        ]
+                }],
+                generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+            };
+
+            const response = await retryGeminiApiCall(requestBody);
+            const data = await response.json();
+            rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+            // Parse output
+            let newMcqs: any[] = [];
+            try {
+                newMcqs = JSON.parse(rawText);
+            } catch {
+                // Fallback: try regex parsing
+                const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
+                const matches = [...rawText.matchAll(pattern)];
+
+                for (const m of matches) {
+                    const options = m[2].split(",").map((s: any) =>
+                        s.trim().replace(/^"|"$/g, "")
+                    );
+
+                    if (options.length === 4) {
+                        newMcqs.push({
+                            question: m[1],
+                            options,
+                            answer: m[3],
+                            explanation: m[4],
+                        });
+                    }
+                }
+            }
+
+            // Filter and validate
+            newMcqs = newMcqs.filter(
+                (mcq) =>
+                    mcq.question &&
+                    Array.isArray(mcq.options) &&
+                    mcq.options.length === 4 &&
+                    ["a", "b", "c", "d"].includes(mcq.answer?.toLowerCase())
+            ).slice(0, needed);
+
+            // Ensure quiz exists
+            if (!quiz) {
+                quiz = await QuizModel.findOne({ chapterId }) ||
+                    await QuizModel.create({
+                        chapterId,
+                        title: chapter.title,
+                        questions: [],
+                        createdBy: req.user._id,
+                        updatedBy: req.user._id,
+                    });
+                quizId = quiz._id.toString();
+            }
+
+            // Save new questions
+            const questionDocs = await QuestionModel.insertMany(
+                newMcqs.map((mcq) => ({
+                    quizId: quiz._id,
+                    question: mcq.question,
+                    options: mcq.options,
+                    answer: mcq.answer.toLowerCase(),
+                    explanation: mcq.explanation,
+                    createdBy: req.user._id,
+                    updatedBy: req.user._id,
+                }))
+            );
+
+            quiz.questions.push(...questionDocs.map((q) => q._id));
+            await quiz.save();
+
+            cachedQuestions.push(
+                ...questionDocs.map((q) => ({
+                    _id: q._id,
+                    question: q.question,
+                    options: q.options,
+                    answer: q.answer,
+                    explanation: q.explanation || "",
+                }))
+            );
+        }
+
+        // Get quiz if not loaded
+        if (!quiz && quizId) {
+            quiz = await QuizModel.findById(quizId);
+        }
+
+        // ✅ For practice mode: get full question details from DB if we only have partial data
+        if (cachedQuestions.length > 0 && !cachedQuestions[0].answer) {
+            const questionIds = cachedQuestions.map(q => q._id);
+            const fullQuestions = await QuestionModel.find({ _id: { $in: questionIds } });
+            cachedQuestions = fullQuestions.map((q: any) => ({
+                _id: q._id,
+                question: q.question,
+                options: q.options,
+                answer: q.answer,
+                explanation: q.explanation || "",
+            }));
+        }
+
+        // ✅ Randomly pick 30 questions for practice mode
+        const shuffled = [...cachedQuestions].sort(() => 0.5 - Math.random());
+        const questionsToReturn = shuffled.slice(0, 30).map((q) => ({
+            _id: q._id,
+            question: q.question,
+            options: q.options,
+            answer: q.answer,
+            explanation: q.explanation || "",
+        }));
+
+        res.status(200).json({
+            success: true,
+            message: "Practice mode questions retrieved successfully",
+            quiz: {
+                _id: quiz?._id || quizId,
+                title: quiz?.title || quizTitle,
+                questions: questionsToReturn,
+            },
+            totalQuestions: 30,
+        });
+    } catch (error) {
+        console.error("Error in practice mode:", error);
+        return next(ErrorHandler.createError("Failed to get practice mode questions", 500));
+    }
+});
+
 const QuizController = {
     createquiz,
     getchapterquiz,
     getQuizQuestions,
     setUserQuizStatus,
     quizhistory,
+    practiceMode,
 };
 
 export default QuizController;

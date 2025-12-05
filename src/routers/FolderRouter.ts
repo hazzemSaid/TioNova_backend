@@ -8,6 +8,7 @@ const FolderRouter = Router();
 FolderRouter.post("/createfolder", verifyToken, FolderController.createfolder);
 FolderRouter.patch("/updatefolder", verifyToken, FolderController.updatefolder);
 FolderRouter.get("/getfolders", verifyToken, FolderController.getfolders);
+FolderRouter.get("/getpublicfolders", verifyToken, FolderController.getpublicfolders);
 FolderRouter.delete("/deletefolder/:folderId", verifyToken, FolderController.deletefolder);
 
 export default FolderRouter;

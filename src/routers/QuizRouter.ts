@@ -10,5 +10,6 @@ QuizRouter.get("/getchapterquiz/:chapterId", verifyToken, QuizController.getchap
 QuizRouter.get("/getQuizQuestions/:quizId", verifyToken, QuizController.getQuizQuestions);
 QuizRouter.post("/setuserquizstatus", verifyToken, QuizController.setUserQuizStatus);
 QuizRouter.post("/quizhistory", verifyToken, QuizController.quizhistory);
+QuizRouter.post("/practicemode", verifyToken, QuizController.practiceMode);
 
 export default QuizRouter;

@@ -207,3 +207,112 @@ export const getFoldersService = async (user: any) => {
     );
     return { folders, cached };
 };
+
+export const getPublicFoldersService = async (user: any) => {
+    const userId = user._id.toString();
+    // Cache specific for public folders for this user (user context needed for quiz stats)
+    // We could technically cache the "raw" public folders globally and then compute stats, 
+    // but the current pattern computes everything in the aggregate. 
+    // Let's use a user-specific key for now to keep it consistent with getFoldersService.
+    const { data: folders, cached } = await CacheHelper.getOrSet(
+        CacheKeys.getFoldersListKey(`public_${userId}`),
+        async () => {
+            const foldersWithChapterCount = await FolderModel.aggregate([
+                {
+                    $match: {
+                        status: 'public'
+                    },
+                },
+                {
+                    $lookup: {
+                        from: "chapters",
+                        let: { folderId: "$_id" },
+                        pipeline: [
+                            { $match: { $expr: { $eq: ["$folderId", "$$folderId"] } } },
+                            { $project: { _id: 1 } }
+                        ],
+                        as: "chapters",
+                    },
+                },
+                {
+                    $lookup: {
+                        from: "users",
+                        localField: "ownerId", // Show owner info for public folders
+                        foreignField: "_id",
+                        as: "owner",
+                        pipeline: [
+                            {
+                                $project: {
+                                    _id: 1,
+                                    username: 1,
+                                    profilePicture: 1,
+                                    email: 1,
+                                },
+                            },
+                        ],
+                    },
+                },
+                {
+                    $lookup: {
+                        from: "userquizstatuses",
+                        let: { chapterIds: "$chapters._id" },
+                        pipeline: [
+                            {
+                                $match: {
+                                    $expr: {
+                                        $and: [
+                                            { $in: ["$chapterId", "$$chapterIds"] },
+                                            { $eq: ["$userId", new mongoose.Types.ObjectId(user._id)] },
+                                        ],
+                                    },
+                                },
+                            },
+                        ],
+                        as: "userQuizStatusesForChapters",
+                    },
+                },
+                {
+                    $addFields: {
+                        chapterCount: { $size: "$chapters" },
+                        owner: { $arrayElemAt: ["$owner", 0] },
+                        attemptedCount: {
+                            $size: {
+                                $ifNull: [
+                                    {
+                                        $setUnion: [
+                                            {
+                                                $map: {
+                                                    input: "$userQuizStatusesForChapters",
+                                                    as: "quizStatus",
+                                                    in: "$$quizStatus.chapterId"
+                                                }
+                                            }, []
+                                        ]
+                                    }, []
+                                ]
+                            }
+                        },
+                        passedCount: {
+                            $size: {
+                                $filter: {
+                                    input: "$userQuizStatusesForChapters",
+                                    as: "quizStatus",
+                                    cond: { $eq: ["$$quizStatus.status", "Passed"] }
+                                }
+                            }
+                        }
+                    },
+                },
+                {
+                    $project: {
+                        chapters: 0,
+                        userQuizStatusesForChapters: 0,
+                    },
+                },
+            ]);
+            return foldersWithChapterCount;
+        },
+        CacheKeys.TTL.SIX_HOURS
+    );
+    return { folders, cached };
+};

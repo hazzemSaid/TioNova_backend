@@ -1,5 +1,5 @@
 import asyncWrapper from "../middleware/asyncwrapper";
-import { createFolderService, deleteFolderService, getFoldersService, updateFolderService } from "../services/folderService";
+import { createFolderService, deleteFolderService, getFoldersService, getPublicFoldersService, updateFolderService } from "../services/folderService";
 import { ProfileService } from "../services/profileService";
 
 const createfolder = asyncWrapper(async (req, res, next) => {
@@ -106,6 +106,20 @@ const getfolders = asyncWrapper(async (req, res, next) => {
     }
 });
 
+const getpublicfolders = asyncWrapper(async (req, res, next) => {
+    try {
+        const { folders, cached } = await getPublicFoldersService(req.user);
+        res.status(200).json({
+            success: true,
+            message: "Public folders retrieved successfully",
+            folders,
+            cached,
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 const deletefolder = asyncWrapper(async (req, res, next) => {
     try {
         const { folderId } = req.params;
@@ -133,6 +147,7 @@ const FolderController = {
     createfolder,
     updatefolder,
     getfolders,
+    getpublicfolders,
     deletefolder,
 };
 

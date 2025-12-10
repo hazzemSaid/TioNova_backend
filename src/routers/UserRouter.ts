@@ -2,8 +2,8 @@
 import { Router } from "express";
 import { body } from "express-validator";
 import AuthController from "../controllers/UserController"; // الكود الكبير اللي كتبته
-import { forgotPasswordValidation, loginValidation, registerValidation, resendVerificationCode, verifyCodeValidation, verifyEmailValidation } from "../utils/validation";
 import verifyToken from "../middleware/verifyToken";
+import { forgotPasswordValidation, loginValidation, registerValidation, resendVerificationCode, verifyCodeValidation, verifyEmailValidation } from "../utils/validation";
 
 const UserRouter = Router();
 
@@ -70,6 +70,6 @@ UserRouter.post(
 );
 
 // Logout
-UserRouter.post("/auth/logout",verifyToken,AuthController.logout);
+UserRouter.post("/auth/logout", verifyToken, AuthController.logout);
 
 export default UserRouter;

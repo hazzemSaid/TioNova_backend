@@ -23,7 +23,7 @@ dotenv.config();
 
 const port = process.env.PORT || 3000;
 const app = express();
-morgan.token("body", (req:any) => JSON.stringify(req.body));
+morgan.token("body", (req: any) => JSON.stringify(req.body));
 app.use(
   morgan(":method :url :status :response-time ms - :body", {
     skip: (req, res) => res.statusCode < 400,
@@ -71,6 +71,12 @@ app.use("/api/v1", PdfRouter);
 app.use("/api/v1", LiveChallengeRouter);
 app.use("/api/v1", analysisRouter);
 app.use("/api/v1", profileRouter);
+
+import swaggerUi from "swagger-ui-express";
+import swaggerSpec from "./config/swagger";
+
+// Swagger UI
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 app.use(
   (err: ICustomError, req: Request, res: Response, next: NextFunction) => {

@@ -291,13 +291,36 @@ export const getChaptersService = async (
 export const getChapterContentService = async (
     user: IUser,
     chapterId: string
-): Promise<{ content: Buffer | string; contentType: string; cached: boolean }> => {
+): Promise<{ content: string; contentType: string; cached: boolean }> => {
     const chapter = await ChapterModel.findById(chapterId);
     if (!chapter) throw ErrorHandler.createError("Chapter not found", 404);
+    
     const cachedContent = await CacheHelper.getCachedChapterContent(chapterId);
     if (cachedContent) {
-        return { content: cachedContent, contentType: chapter.contentType, cached: true };
+        // Convert Buffer to base64 string for JSON response
+        const base64Content = cachedContent.toString('base64');
+        return { content: base64Content, contentType: chapter.contentType, cached: true };
     }
-    await CacheHelper.cacheChapterContent(chapterId, chapter.content, CacheKeys.TTL.ONE_WEEK);
-    return { content: chapter.content, contentType: chapter.contentType, cached: false };
+    
+    // Convert MongoDB Binary/Buffer to proper Node.js Buffer, then to base64
+    let contentBuffer: Buffer;
+    if (Buffer.isBuffer(chapter.content)) {
+        contentBuffer = chapter.content;
+    } else if (chapter.content && chapter.content.buffer) {
+        // Handle MongoDB Binary type
+        contentBuffer = Buffer.from(chapter.content.buffer);
+    } else if (typeof chapter.content === 'string') {
+        // If content is already a string (e.g., YouTube URL), return as-is
+        return { content: chapter.content, contentType: chapter.contentType, cached: false };
+    } else {
+        // Fallback: try to create buffer from content
+        contentBuffer = Buffer.from(chapter.content);
+    }
+    
+    // Cache the content for future requests
+    await CacheHelper.cacheChapterContent(chapterId, contentBuffer, CacheKeys.TTL.ONE_WEEK);
+    
+    // Return as base64 string for JSON serialization
+    const base64Content = contentBuffer.toString('base64');
+    return { content: base64Content, contentType: chapter.contentType, cached: false };
 };

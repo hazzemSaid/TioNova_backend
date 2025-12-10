@@ -137,7 +137,7 @@ Output Format (JSON array only, no additional text):
 
 			try {
 				const response = await callGroqApi({
-					model: 'llama-3.3-70b-versatile' as const,
+					model: 'openai/gpt-oss-120b' as const,
 					messages: [
 						{ role: 'system' as const, content: systemPrompt },
 						{ role: 'user' as const, content: userPrompt }

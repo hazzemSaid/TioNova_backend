@@ -109,7 +109,6 @@ export const getFoldersService = async (user: any) => {
                                     $elemMatch: { $eq: new mongoose.Types.ObjectId(user._id) },
                                 },
                             },
-                            { status: 'public' },
                         ],
                     },
                 },

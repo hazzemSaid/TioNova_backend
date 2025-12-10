@@ -35,7 +35,7 @@ export async function callGroqApi(
 
     // Set default model if not provided
     if (!requestBody.model) {
-        requestBody.model = 'llama-3.3-70b-versatile'; // Fast and capable model
+        requestBody.model = 'openai/gpt-oss-120b'; // OpenAI GPT OSS 120B model for quiz generation
     }
 
     // Set default temperature if not provided

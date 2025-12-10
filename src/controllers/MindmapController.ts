@@ -130,7 +130,7 @@ Guidelines:
         const userPrompt = `Process the following content and generate a mindmap:\n\n${chapter.overcontent}`;
 
         const response = await callGroqApi({
-            model: 'llama-3.3-70b-versatile' as const,
+            model: 'openai/gpt-oss-120b' as const,
             messages: [
                 { role: 'system' as const, content: systemPrompt },
                 { role: 'user' as const, content: userPrompt }
@@ -441,7 +441,7 @@ ${chapter.overcontent}
 Generate smart notes about "${text}" based on the chapter content above.`;
 
         const response = await callGroqApi({
-            model: 'llama-3.3-70b-versatile' as const,
+            model: 'openai/gpt-oss-120b' as const,
             messages: [
                 { role: 'system' as const, content: systemPrompt },
                 { role: 'user' as const, content: userPrompt }

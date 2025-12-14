@@ -1,5 +1,5 @@
-import swaggerIds from "swagger-jsdoc";
 import path from "path";
+import swaggerIds from "swagger-jsdoc";
 
 let swaggerSpec: object;
 

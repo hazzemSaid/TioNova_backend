@@ -44,8 +44,8 @@ const googleAudiences = [
 
 // Utility functions
 const generateVerificationCode = (): string => {
-	const MIN = 10000000;
-	const MAX = 99999999;
+	const MIN = 100000;
+	const MAX = 999999;
 	return Math.floor(MIN + Math.random() * (MAX - MIN + 1)).toString();
 };
 
@@ -486,7 +486,7 @@ const forgotPassword = asyncWrapper(async (req, res, next) => {
 		});
 	}
 
-	const resetCode = generateVerificationCode(); // 8-digit
+	const resetCode = generateVerificationCode(); // 6-digit
 	const hashedCode = await hash(resetCode);
 	const resetExpiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
 

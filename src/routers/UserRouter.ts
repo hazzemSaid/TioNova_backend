@@ -63,7 +63,7 @@ UserRouter.post(
 	"/auth/reset-password",
 	[
 		body("email").isEmail(),
-		body("code").isLength({ min: 8, max: 8 }),
+		body("code").isLength({ min: 6, max: 6 }),
 		body("password").isLength({ min: 6 }),
 	],
 	AuthController.resetPassword

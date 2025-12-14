@@ -424,7 +424,7 @@ const setUserQuizStatus = asyncWrapper(async (req, res, next) => {
         success: true,
         message: "Quiz graded successfully",
         result: {
-            totalQuestions: 15,
+            totalQuestions: totalAnswered,
             correct: correctCount,
             score: scorePercent,
             status,

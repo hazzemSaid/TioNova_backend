@@ -75,8 +75,19 @@ app.use("/api/v1", profileRouter);
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./config/swagger";
 
-// Swagger UI
-app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// Swagger JSON endpoint (works in serverless)
+app.get("/api-docs.json", (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  res.send(swaggerSpec);
+});
+
+// Swagger UI - use inline spec instead of file references for Vercel compatibility
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  explorer: true,
+  swaggerOptions: {
+    url: "/api-docs.json",
+  },
+}));
 
 app.use(
   (err: ICustomError, req: Request, res: Response, next: NextFunction) => {

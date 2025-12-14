@@ -13,7 +13,8 @@
     "worker": "ts-node src/workers/chapterWorker.ts",
     "start:all": "concurrently \"npm run dev\" \"npm run worker\"",
     "start:worker": "ts-node api/worker.ts",
-    "vercel-build": "npm run build"
+    "generate-swagger": "ts-node scripts/generateSwagger.ts",
+    "vercel-build": "npm run generate-swagger && npm run build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.67.0",

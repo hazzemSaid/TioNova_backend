@@ -1,16 +1,17 @@
 import swaggerIds from "swagger-jsdoc";
-import * as fs from "fs";
-import * as path from "path";
+import path from "path";
 
-// Check if pre-generated swagger.json exists (for Vercel production)
-const swaggerJsonPath = path.join(__dirname, "../../dist/swagger.json");
 let swaggerSpec: object;
 
-if (process.env.VERCEL && fs.existsSync(swaggerJsonPath)) {
-	// Load pre-generated swagger spec in production
-	swaggerSpec = JSON.parse(fs.readFileSync(swaggerJsonPath, "utf-8"));
-} else {
-	// Generate dynamically in development
+// Try to load pre-generated swagger spec (for Vercel production)
+try {
+	// This file is generated during build by scripts/generateSwagger.ts
+	swaggerSpec = require("./swagger-spec.json");
+	console.log("✅ Loaded pre-generated swagger spec");
+} catch {
+	// Fallback to dynamic generation (for local development)
+	console.log("⚠️ Pre-generated swagger spec not found, generating dynamically...");
+	
 	const options = {
 		definition: {
 			openapi: "3.0.0",
@@ -45,9 +46,9 @@ if (process.env.VERCEL && fs.existsSync(swaggerJsonPath)) {
 			],
 		},
 		apis: [
-			"./src/routers/*.ts",
-			"./src/models/*.ts",
-			"./src/docs/*.ts",
+			path.join(__dirname, "../docs/*.ts"),
+			path.join(__dirname, "../routers/*.ts"),
+			path.join(__dirname, "../models/*.ts"),
 		],
 	};
 

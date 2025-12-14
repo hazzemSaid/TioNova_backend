@@ -44,14 +44,15 @@ const options = {
 
 const swaggerSpec = swaggerJsdoc(options);
 
-// Ensure dist directory exists
-const distPath = path.join(__dirname, "..", "dist");
-if (!fs.existsSync(distPath)) {
-  fs.mkdirSync(distPath, { recursive: true });
+// Write to src/config so it gets bundled with Vercel
+const srcConfigPath = path.join(__dirname, "..", "src", "config");
+if (!fs.existsSync(srcConfigPath)) {
+  fs.mkdirSync(srcConfigPath, { recursive: true });
 }
 
-// Write swagger spec to JSON file
-const outputPath = path.join(distPath, "swagger.json");
+const outputPath = path.join(srcConfigPath, "swagger-spec.json");
 fs.writeFileSync(outputPath, JSON.stringify(swaggerSpec, null, 2));
 
 console.log(`✅ Swagger spec generated at: ${outputPath}`);
+console.log(`📊 Paths: ${Object.keys((swaggerSpec as any).paths || {}).length}`);
+console.log(`📦 Schemas: ${Object.keys((swaggerSpec as any).components?.schemas || {}).length}`);

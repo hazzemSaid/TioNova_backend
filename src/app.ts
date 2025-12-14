@@ -75,18 +75,18 @@ app.use("/api/v1", profileRouter);
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./config/swagger";
 
-// Swagger JSON endpoint (works in serverless)
-app.get("/api-docs.json", (req, res) => {
+// Swagger JSON endpoint - under /api/v1 for Vercel compatibility
+app.get("/api/v1/docs.json", cors(), (req, res) => {
   res.setHeader("Content-Type", "application/json");
   res.send(swaggerSpec);
 });
 
-// Swagger UI - use inline spec instead of file references for Vercel compatibility
-app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+// Swagger UI - mounted under /api/v1/docs for Vercel serverless compatibility
+// This ensures proper routing through the serverless function
+app.use("/api/v1/docs", cors(), swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   explorer: true,
-  swaggerOptions: {
-    url: "/api-docs.json",
-  },
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: "TioNova API Documentation",
 }));
 
 app.use(

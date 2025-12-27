@@ -1,5 +1,5 @@
 import bcrypt from 'bcrypt';
-import mongoose, { Document, Model } from 'mongoose';
+import mongoose from 'mongoose';
 const UserSchema = new mongoose.Schema({
 	username: {
 		type: String,
@@ -29,7 +29,7 @@ const UserSchema = new mongoose.Schema({
 	// Profile information
 
 	// streak: { type: Number, default: 0 },
-	// profilePicture: { type: String, default: 'https://res.cloudinary.com/dr5cpch1n/image/upload/v1752943485/Unknown_person_o3xaku.jpg' },
+	profilePicture: { type: String, default: 'https://res.cloudinary.com/dr5cpch1n/image/upload/v1752943485/Unknown_person_o3xaku.jpg' },
 	role: { type: String, enum: ['user', 'admin'], default: 'user' },
 
 	// Account status

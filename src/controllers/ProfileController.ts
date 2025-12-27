@@ -126,10 +126,14 @@ const updateProfile = asyncWrapper(async (req, res, next) => {
     // Update profile
     await ProfileService.updateProfileInfo(userId, updateData);
 
-    // If username changed, also update User model
-    if (username) {
+    // If username or profilePicture changed, also update User model
+    if (username || profilePictureUrl) {
+        const userUpdate: any = {};
+        if (username) userUpdate.username = username;
+        if (profilePictureUrl) userUpdate.profilePicture = profilePictureUrl;
+
         try {
-            await UserModel.findByIdAndUpdate(userId, { username });
+            await UserModel.findByIdAndUpdate(userId, userUpdate);
         } catch (error: any) {
             // Handle duplicate username error
             if (error.code === 11000) {

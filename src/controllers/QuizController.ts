@@ -11,6 +11,7 @@ import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
+import { callOpenRouterApi, extractOpenRouterText } from "../utils/openRouterApi";
 
 const createquiz = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -75,64 +76,69 @@ const createquiz = asyncWrapper(async (req, res, next) => {
             const needed = 50 - cachedQuestions.length;
             const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
 
-            const systemPrompt = `You are an AI assistant that creates multiple choice quizzes based on educational content.
+            const systemPrompt = `Role: Expert Exam Preparer AI. Task: Create exactly ${needed} high-quality, exam-style multiple-choice questions based ONLY on the provided chapter content to ensure comprehensive coverage.
 
-IMPORTANT INSTRUCTIONS:
-1. Read and analyze the provided chapter content carefully
-2. Generate exactly ${needed} new questions ONLY from the information contained in this specific chapter
-3. Questions must be directly related to the topics, concepts, and information present in the chapter content
-4. Do NOT create generic questions or questions from outside knowledge
-5. Each question should test understanding of specific content from the chapter
-6. Do NOT repeat any of the questions listed below
+Strategy for "Smart" Generation:
+1. Comprehensive Coverage: Scan the entire text to identify ALL key concepts, definitions, figures, and critical details.
+2. Exam Focus: Prioritize information likely to be tested (e.g., "What is...", "Why does...", "How to...", distinctions between concepts).
+3. Difficulty Variety: Mix simple recall questions with conceptual application questions.
+4. Distractor Quality: Options b, c, and d must be plausible but clearly incorrect based on the text.
 
-Existing questions to avoid:
+Constraints:
+1. Source Material: Use ONLY the provided chapter content. Do NOT use external knowledge.
+2. Uniqueness: Strictly avoid duplicating or rephrasing these existing questions:
 ${existingTexts}
+3. Quantity: Generate exactly ${needed} questions.
+4. Output: VALID JSON ARRAY ONLY. No markdown formatting, no code blocks, no intro/outro text.
 
-Requirements for each question:
-- Must be answerable using only information from the chapter
-- Should test key concepts, facts, or principles from the content
-- Include 4 distinct options (labeled a, b, c, d)
-- Only one option should be correct
-- Provide a clear explanation referencing the chapter content
+Question Format:
+- "question": Professional, clear, exam-style syntax.
+- "options": Array of 4 strings, labeled "a)", "b)", "c)", "d)".
+- "answer": The correct option letter ("a", "b", "c", or "d").
+- "explanation": Concise justification referencing the specific part of the text.
 
-Output Format (JSON array only, no additional text):
+Example Output:
 [
   {
-    "question": "Your question text based on chapter content?",
-    "options": ["a) Option1", "b) Option2", "c) Option3", "d) Option4"],
+    "question": "Which of the following best describes the function of X?",
+    "options": ["a) Definition 1", "b) Definition 2", "c) Definition 3", "d) Definition 4"],
     "answer": "a",
-    "explanation": "Brief explanation referencing the chapter content."
+    "explanation": "The text defines X as..."
   }
 ]`;
-
             let rawText: string;
 
-            // ✅ Use Gemini API for all content types
-            const base64File = chapter.content.toString("base64");
-            const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-
-            let geminiPrompt: string;
+            // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
             if (hasOvercontent) {
-                geminiPrompt = `${systemPrompt}\n\nChapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
+                const openRouterResponse = await callOpenRouterApi({
+                    model: 'nvidia/nemotron-3-nano-30b-a3b:free',
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.` }
+                    ],
+                    temperature: 0.7
+                });
+                rawText = extractOpenRouterText(openRouterResponse);
             } else {
-                geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
-            }
+                // Fallback to Gemini for PDF content
+                const base64File = chapter.content.toString("base64");
+                const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+                const geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
 
-            const requestBody = {
-                contents: [{
-                    parts: hasOvercontent
-                        ? [{ text: geminiPrompt }]
-                        : [
+                const requestBody = {
+                    contents: [{
+                        parts: [
                             { text: geminiPrompt },
                             { inlineData: { mimeType, data: base64File } }
                         ]
-                }],
-                generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
-            };
+                    }],
+                    generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+                };
 
-            const response = await retryGeminiApiCall(requestBody);
-            const data = await response.json();
-            rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                const response = await retryGeminiApiCall(requestBody);
+                const data = await response.json();
+                rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            }
 
             // Parse output
             let newMcqs: any[] = [];
@@ -623,64 +629,70 @@ const practiceMode = asyncWrapper(async (req, res, next) => {
             const needed = 50 - cachedQuestions.length;
             const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
 
-            const systemPrompt = `You are an AI assistant that creates multiple choice quizzes based on educational content.
+            const systemPrompt = `Role: Expert Exam Preparer AI. Task: Create exactly ${needed} high-quality, exam-style multiple-choice questions based ONLY on the provided chapter content to ensure comprehensive coverage.
 
-IMPORTANT INSTRUCTIONS:
-1. Read and analyze the provided chapter content carefully
-2. Generate exactly ${needed} new questions ONLY from the information contained in this specific chapter
-3. Questions must be directly related to the topics, concepts, and information present in the chapter content
-4. Do NOT create generic questions or questions from outside knowledge
-5. Each question should test understanding of specific content from the chapter
-6. Do NOT repeat any of the questions listed below
+Strategy for "Smart" Generation:
+1. Comprehensive Coverage: Scan the entire text to identify ALL key concepts, definitions, figures, and critical details.
+2. Exam Focus: Prioritize information likely to be tested (e.g., "What is...", "Why does...", "How to...", distinctions between concepts).
+3. Difficulty Variety: Mix simple recall questions with conceptual application questions.
+4. Distractor Quality: Options b, c, and d must be plausible but clearly incorrect based on the text.
 
-Existing questions to avoid:
+Constraints:
+1. Source Material: Use ONLY the provided chapter content. Do NOT use external knowledge.
+2. Uniqueness: Strictly avoid duplicating or rephrasing these existing questions:
 ${existingTexts}
+3. Quantity: Generate exactly ${needed} questions.
+4. Output: VALID JSON ARRAY ONLY. No markdown formatting, no code blocks, no intro/outro text.
 
-Requirements for each question:
-- Must be answerable using only information from the chapter
-- Should test key concepts, facts, or principles from the content
-- Include 4 distinct options (labeled a, b, c, d)
-- Only one option should be correct
-- Provide a clear explanation referencing the chapter content
+Question Format:
+- "question": Professional, clear, exam-style syntax.
+- "options": Array of 4 strings, labeled "a)", "b)", "c)", "d)".
+- "answer": The correct option letter ("a", "b", "c", or "d").
+- "explanation": Concise justification referencing the specific part of the text.
 
-Output Format (JSON array only, no additional text):
+Example Output:
 [
   {
-    "question": "Your question text based on chapter content?",
-    "options": ["a) Option1", "b) Option2", "c) Option3", "d) Option4"],
+    "question": "Which of the following best describes the function of X?",
+    "options": ["a) Definition 1", "b) Definition 2", "c) Definition 3", "d) Definition 4"],
     "answer": "a",
-    "explanation": "Brief explanation referencing the chapter content."
+    "explanation": "The text defines X as..."
   }
 ]`;
 
             let rawText: string;
 
-            // ✅ Use Gemini API for all content types
-            const base64File = chapter.content.toString("base64");
-            const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-
-            let geminiPrompt: string;
+            // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
             if (hasOvercontent) {
-                geminiPrompt = `${systemPrompt}\n\nChapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
+                const openRouterResponse = await callOpenRouterApi({
+                    model: 'nvidia/nemotron-3-nano-30b-a3b:free',
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.` }
+                    ],
+                    temperature: 0.7
+                });
+                rawText = extractOpenRouterText(openRouterResponse);
             } else {
-                geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
-            }
+                // Fallback to Gemini for PDF content
+                const base64File = chapter.content.toString("base64");
+                const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+                const geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
 
-            const requestBody = {
-                contents: [{
-                    parts: hasOvercontent
-                        ? [{ text: geminiPrompt }]
-                        : [
+                const requestBody = {
+                    contents: [{
+                        parts: [
                             { text: geminiPrompt },
                             { inlineData: { mimeType, data: base64File } }
                         ]
-                }],
-                generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
-            };
+                    }],
+                    generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+                };
 
-            const response = await retryGeminiApiCall(requestBody);
-            const data = await response.json();
-            rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                const response = await retryGeminiApiCall(requestBody);
+                const data = await response.json();
+                rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            }
 
             // Parse output
             let newMcqs: any[] = [];

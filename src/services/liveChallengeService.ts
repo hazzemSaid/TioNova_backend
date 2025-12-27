@@ -9,6 +9,7 @@ import ErrorHandler from '../utils/error';
 import { admin } from '../utils/firebase';
 import { getMimeType, retryGeminiApiCall } from '../utils/geminiApi';
 import { callGroqApi, extractGroqText, parseGroqJson } from '../utils/groqApi';
+import { callOpenRouterApi, extractOpenRouterText } from '../utils/openRouterApi';
 import { ProfileService } from './profileService';
 
 const db = admin.database();
@@ -132,22 +133,21 @@ Output Format (JSON array only, no additional text):
 		let rawText: string;
 
 		if (hasOvercontent) {
-			// Use Groq with extracted text (fast path)
+			// Use OpenRouter with extracted text (fast path)
 			const userPrompt = `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
 
 			try {
-				const response = await callGroqApi({
-					model: 'openai/gpt-oss-120b' as const,
+				const response = await callOpenRouterApi({
+					model: 'nvidia/nemotron-3-nano-30b-a3b:free',
 					messages: [
-						{ role: 'system' as const, content: systemPrompt },
-						{ role: 'user' as const, content: userPrompt }
+						{ role: 'system', content: systemPrompt },
+						{ role: 'user', content: userPrompt }
 					],
-					temperature: 0.7,
-					max_tokens: 8192,
+					temperature: 0.7
 				});
-				rawText = extractGroqText(response);
+				rawText = extractOpenRouterText(response);
 			} catch (apiErr) {
-				console.error('Groq API error:', apiErr);
+				console.error('OpenRouter API error:', apiErr);
 				throw new Error('Failed to generate quiz questions');
 			}
 		} else {

@@ -54,7 +54,8 @@ const generateTokens = (user: any) => {
 		email: user.email,
 		_id: user._id,
 		role: user.role || 'user',
-		username: user.username
+		username: user.username,
+		profilePicture: user.profilePicture || 'https://res.cloudinary.com/dr5cpch1n/image/upload/v1752943485/Unknown_person_o3xaku.jpg'
 	};
 
 	const accessToken = JWT.sign(
@@ -280,22 +281,36 @@ const login = asyncWrapper(async (req, res, next) => {
 		return next(ErrorHandler.createError("Invalid email or password", 401));
 	}
 
-	const { accessToken, refreshToken } = generateTokens(user);
-
-	// Store refresh token hash
-	user.refreshtoken = await hash(refreshToken);
-	await user.save();
-
-	// ✅ Ensure profile exists (for legacy users)
+	// ✅ Ensure profile exists and sync profile picture (for legacy users)
 	try {
 		await ProfileService.initializeProfile(
 			user._id.toString(),
 			user.username,
 			(user as any).profilePicture
 		);
+		
+		// Sync profile picture from Profile to User if User has default/missing but Profile has custom
+		// This handles legacy users who updated their picture before we added it to UserModel
+		const profile = await ProfileService.getProfile(user._id.toString());
+		const defaultPic = 'https://res.cloudinary.com/dr5cpch1n/image/upload/v1752943485/Unknown_person_o3xaku.jpg';
+		
+		if (profile && profile.profilePicture && 
+			profile.profilePicture !== defaultPic && 
+			(!user.profilePicture || user.profilePicture === defaultPic)) {
+			
+			user.profilePicture = profile.profilePicture;
+			await user.save();
+			console.log(`Synced profile picture for user ${user._id}`);
+		}
 	} catch (e) {
-		console.error("Error initializing profile on login:", e);
+		console.error("Error initializing/syncing profile on login:", e);
 	}
+
+	const { accessToken, refreshToken } = generateTokens(user);
+
+	// Store refresh token hash
+	user.refreshtoken = await hash(refreshToken);
+	await user.save();
 
 	const response = await createUserResponse(user, accessToken, refreshToken);
 	return res.status(200).json(response);
@@ -410,6 +425,12 @@ const googleAuth = asyncWrapper(async (req, res, next) => {
 		let user = await userModel.findOne({ email });
 
 		if (user) {
+			// Sync profile picture from Google if missing
+			if (!user.profilePicture && picture) {
+				user.profilePicture = picture;
+				await user.save();
+			}
+
 			// Existing user - generate new tokens
 			const { accessToken, refreshToken } = generateTokens(user);
 			user.refreshtoken = await hash(refreshToken);

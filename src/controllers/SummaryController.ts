@@ -6,6 +6,7 @@ import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
+import { callOpenRouterApi, extractOpenRouterText } from "../utils/openRouterApi";
 
 const summarizecchapter = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -100,35 +101,41 @@ Guidelines:
 - Focus on conceptual clarity, real-world relevance, and test-ready phrasing for flashcards.`;
 
     let summaryJson;
+    let rawText: string = "";
 
-    // Use Gemini API for both overcontent (text) and PDF (inline) paths
-    const base64File = chapter.content ? chapter.content.toString("base64") : "";
-    const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-
-    let geminiPrompt: string;
+    // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
     if (hasOvercontent) {
-        geminiPrompt = `${systemPrompt}\n\nGenerate the JSON summary for this chapter content:\n\n${chapter.overcontent}`;
+        const openRouterResponse = await callOpenRouterApi({
+            model: 'nvidia/nemotron-3-nano-30b-a3b:free',
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Generate the JSON summary for this chapter content:\n\n${chapter.overcontent}` }
+            ],
+            temperature: 0.5
+        });
+        rawText = extractOpenRouterText(openRouterResponse);
     } else {
-        geminiPrompt = `${systemPrompt}\n\nNow generate the JSON summary for the chapter content in this PDF.`;
-    }
+        // Fallback to Gemini for PDF content
+        const base64File = chapter.content ? chapter.content.toString("base64") : "";
+        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
+        const geminiPrompt = `${systemPrompt}\n\nNow generate the JSON summary for the chapter content in this PDF.`;
 
-    const requestBody: any = {
-        contents: [
-            {
-                parts: hasOvercontent
-                    ? [{ text: geminiPrompt }]
-                    : [
+        const requestBody: any = {
+            contents: [
+                {
+                    parts: [
                         { text: geminiPrompt },
                         { inlineData: { mimeType, data: base64File } },
                     ],
-            },
-        ],
-        generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
-    };
+                },
+            ],
+            generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
+        };
 
-    const response = await retryGeminiApiCall(requestBody);
-    const data = await response.json();
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        const response = await retryGeminiApiCall(requestBody);
+        const data = await response.json();
+        rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    }
 
     // Try JSON.parse first, then attempt repair if needed
     try {
@@ -138,7 +145,7 @@ Guidelines:
             const { jsonrepair } = require("jsonrepair");
             summaryJson = JSON.parse(jsonrepair(rawText));
         } catch (err) {
-            return next(ErrorHandler.createError("Invalid JSON response from Gemini API", 400));
+            return next(ErrorHandler.createError("Invalid JSON response from AI service", 400));
         }
     }
 

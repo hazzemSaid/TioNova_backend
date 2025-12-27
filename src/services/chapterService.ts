@@ -162,7 +162,7 @@ export const createChapterService = async (
         const requestBody = {
             contents: [{
                 parts: [
-                    { text: `You are an expert educational document cleaning and intelligent text extraction assistant. Your task is to process the provided PDF and return a clean, structured, and highly useful text version of its content for learning, summarization, and quiz generation.\n\n**Instructions:**\n1. **Extract all educationally relevant text.** Capture headings, paragraphs, lists, and explanations. Ignore names of doctors, personal information, author lists, institutional details, and any irrelevant metadata.\n2. **Remove noise and artifacts.** Eliminate OCR errors, visual artifacts, duplicated phrases, page numbers, headers, footers, and references to individuals or organizations.\n3. **Structure and normalize content.**\n     * Reconstruct broken sentences and paragraphs.\n     * Maintain the original hierarchy of chapters, sections, and sub-sections.\n     * Preserve bullet points, numbered lists, and code blocks.\n     * Remove any content that is not useful for learning, summarization, or quiz creation.\n4. **Final output:** Provide ONLY the cleaned, smart, and educationally useful text content of the document. Do not include names, personal info, or commentary. Do not summarize or interpret, just clean and filter the text.\n\n**Output format:** Return the full, uninterpreted, smart text in a single, well-formatted string, ready for use in summaries and quizzes.` },
+                    { text: `You are an expert educational content extractor. Your goal is to convert the provided PDF into a rich, detailed, and structured text format perfectly optimized for generating high-quality summaries and quizzes.\n\n**Core Responsibilities:**\n1. **Deep Extraction:** Capture EVERY educational detail. Do not summarize. Include:\n    * Full explanations of concepts.\n    * All examples, case studies, and scenarios.\n    * Technical details, formulas, and data points.\n    * Code blocks and algorithms (preserve exact formatting).\n2. **Question Handling (CRITICAL):** If the PDF contains questions (practice problems, review questions, etc.), you MUST extract them and treat them as critical verification rules.\n    * Label them clearly as "[Existing Question]: <Question Text>"\n    * If answers are provided, include them.\n3. **Noise Elimination:** Remove headers, footers, page numbers, author names, references, and watermarks. Keep only the learning content.\n4. **Smart Structuring:** Use Markdown.\n    * # for Chapters, ## for Sections, ### for Subsections.\n    * Use bullet points for lists.\n    * **Bold** key terms and definitions.\n\n**Output:** A single, comprehensive Markdown string containing the raw, detailed knowledge from the document.` },
                     { inlineData: { mimeType: file.mimetype, data: base64 } }
                 ]
             }],
@@ -294,14 +294,14 @@ export const getChapterContentService = async (
 ): Promise<{ content: string; contentType: string; cached: boolean }> => {
     const chapter = await ChapterModel.findById(chapterId);
     if (!chapter) throw ErrorHandler.createError("Chapter not found", 404);
-    
+
     const cachedContent = await CacheHelper.getCachedChapterContent(chapterId);
     if (cachedContent) {
         // Convert Buffer to base64 string for JSON response
         const base64Content = cachedContent.toString('base64');
         return { content: base64Content, contentType: chapter.contentType, cached: true };
     }
-    
+
     // Convert MongoDB Binary/Buffer to proper Node.js Buffer, then to base64
     let contentBuffer: Buffer;
     if (Buffer.isBuffer(chapter.content)) {
@@ -316,10 +316,10 @@ export const getChapterContentService = async (
         // Fallback: try to create buffer from content
         contentBuffer = Buffer.from(chapter.content);
     }
-    
+
     // Cache the content for future requests
     await CacheHelper.cacheChapterContent(chapterId, contentBuffer, CacheKeys.TTL.ONE_WEEK);
-    
+
     // Return as base64 string for JSON serialization
     const base64Content = contentBuffer.toString('base64');
     return { content: base64Content, contentType: chapter.contentType, cached: false };

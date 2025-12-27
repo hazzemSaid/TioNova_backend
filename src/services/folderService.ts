@@ -46,7 +46,14 @@ export const updateFolderService = async (user: any, body: any) => {
     const { folderId, title, description, status, category, color, icon, sharedWith } = body;
     const folder = await FolderModel.findById(folderId);
     if (!folder) throw ErrorHandler.createError("Folder not found", 404);
+
+    if (folder.ownerId.toString() !== user._id.toString()) {
+        throw ErrorHandler.createError("Unauthorized: You can only update your own folders", 403);
+    }
+
+    const previousStatus = folder.status;
     const previousSharedWith = folder.sharedWith?.map((id: any) => id.toString()) || [];
+
     folder.title = title || folder.title;
     folder.description = description || folder.description;
     folder.status = status || folder.status;
@@ -64,7 +71,7 @@ export const updateFolderService = async (user: any, body: any) => {
         }).select("_id username email profilePicture").lean();
     }
     // Invalidate cache
-    if (folder.status === 'public') {
+    if (folder.status === 'public' || previousStatus === 'public') {
         await CacheHelper.invalidateAllUsersFolders();
     } else {
         const affectedUserIds = new Set([
@@ -82,15 +89,25 @@ export const updateFolderService = async (user: any, body: any) => {
 export const deleteFolderService = async (user: any, folderId: string) => {
     const folder = await FolderModel.findById(folderId);
     if (!folder) throw ErrorHandler.createError("Folder not found", 404);
+
+    if (folder.ownerId.toString() !== user._id.toString()) {
+        throw ErrorHandler.createError("Unauthorized: You can only delete your own folders", 403);
+    }
+
     const affectedUserIds = [
         folder.ownerId.toString(),
         ...(folder.sharedWith || []).map((id: any) => id.toString()),
     ];
     await ChapterModel.deleteMany({ folderId: folder._id });
     await FolderModel.findByIdAndDelete(folderId);
-    await Promise.all(
-        affectedUserIds.map(userId => CacheHelper.invalidateUserFolders(userId))
-    );
+
+    if (folder.status === 'public') {
+        await CacheHelper.invalidateAllUsersFolders();
+    } else {
+        await Promise.all(
+            affectedUserIds.map(userId => CacheHelper.invalidateUserFolders(userId))
+        );
+    }
     return { success: true };
 };
 
@@ -121,6 +138,25 @@ export const getFoldersService = async (user: any) => {
                             { $project: { _id: 1 } }
                         ],
                         as: "chapters",
+                    },
+                },
+                {
+                    // Lookup owner info for each folder
+                    $lookup: {
+                        from: "users",
+                        localField: "ownerId",
+                        foreignField: "_id",
+                        as: "ownerInfo",
+                        pipeline: [
+                            {
+                                $project: {
+                                    _id: 1,
+                                    username: 1,
+                                    profilePicture: 1,
+                                    email: 1,
+                                },
+                            },
+                        ],
                     },
                 },
                 {
@@ -163,6 +199,7 @@ export const getFoldersService = async (user: any) => {
                 {
                     $addFields: {
                         chapterCount: { $size: "$chapters" },
+                        owner: { $arrayElemAt: ["$ownerInfo", 0] },
                         sharedWith: "$sharedUsers",
                         attemptedCount: {
                             $size: {
@@ -195,6 +232,7 @@ export const getFoldersService = async (user: any) => {
                 {
                     $project: {
                         chapters: 0,
+                        ownerInfo: 0,
                         sharedUsers: 0,
                         userQuizStatusesForChapters: 0,
                     },

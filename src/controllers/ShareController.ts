@@ -66,15 +66,37 @@ export const getAvailableUsersForShare = asyncWrapper(async (req, res) => {
 
 const setuserssharewith = asyncWrapper(async (req, res, next) => {
     const { folderId, sharedWith } = req.body;
-    
+
     const folder = await FolderModel.findById(folderId);
     if (!folder) {
         return next(ErrorHandler.createError("Folder not found", 404));
     }
-    
+
+    const previousSharedWith = folder.sharedWith?.map((id: any) => id.toString()) || [];
     folder.sharedWith = sharedWith;
     await folder.save();
-    
+
+    // Invalidate cache for owner and all affected shared users
+    try {
+        const { CacheHelper } = require("../utils/cacheHelper");
+        const affectedUserIds = new Set([
+            folder.ownerId.toString(),
+            ...previousSharedWith,
+            ...(sharedWith || []).map((id: any) => id.toString()),
+        ]);
+
+        await Promise.all(
+            Array.from(affectedUserIds).map(userId => CacheHelper.invalidateUserFolders(userId))
+        );
+
+        // If it's a public folder, also invalidate global public lists
+        if (folder.status === 'public') {
+            await CacheHelper.invalidateAllUsersFolders();
+        }
+    } catch (err) {
+        console.error("Cache invalidation error in setuserssharewith:", err);
+    }
+
     res.status(200).json({
         success: true,
         message: "Users shared successfully",

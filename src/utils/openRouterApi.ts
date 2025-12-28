@@ -17,7 +17,7 @@ interface OpenRouterRequestBody {
 }
 
 function getApiKey(): string {
-    const key = process.env.OPENROUTER_API_KEY || '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';
+    const key = process.env.OPENROUTER_API_KEY;
     if (!key) {
         throw new Error('OPENROUTER_API_KEY is not defined in environment variables');
     }
@@ -37,7 +37,7 @@ export async function callOpenRouterApi(
 
     // Set default model if not provided
     if (!requestBody.model) {
-        requestBody.model = 'nvidia/nemotron-3-nano-30b-a3b:free';
+        requestBody.model = 'openrouter/auto';
     }
 
     // Set default temperature if not provided
@@ -48,6 +48,11 @@ export async function callOpenRouterApi(
     // Enable reasoning if not explicitly set
     if (requestBody.reasoning === undefined) {
         requestBody.reasoning = { enabled: true };
+    }
+
+    // Set default max_tokens if not provided to avoid massive default reservations
+    if (!requestBody.max_tokens) {
+        requestBody.max_tokens = 8192;
     }
 
     let lastError: any;
@@ -103,4 +108,29 @@ export function extractOpenRouterText(response: any): string {
         return '';
     }
     return response.choices[0].message.content || '';
+}
+/**
+ * Helper function to parse JSON from OpenRouter response
+ * Handles markdown code fences and attempts repair if needed
+ */
+export function parseOpenRouterJson(rawText: string): any {
+    // Clean up markdown code fences if present
+    let cleanText = rawText.trim();
+    if (cleanText.startsWith('```json')) {
+        cleanText = cleanText.replace(/```json\s*/, '').replace(/```\s*$/, '');
+    } else if (cleanText.startsWith('```')) {
+        cleanText = cleanText.replace(/```\s*/, '').replace(/```\s*$/, '');
+    }
+
+    try {
+        return JSON.parse(cleanText);
+    } catch (error) {
+        // Try to repair JSON
+        try {
+            const { jsonrepair } = require('jsonrepair');
+            return JSON.parse(jsonrepair(cleanText));
+        } catch (repairError) {
+            throw new Error(`Failed to parse JSON from response: ${error}`);
+        }
+    }
 }

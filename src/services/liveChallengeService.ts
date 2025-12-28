@@ -8,8 +8,7 @@ import QuizModel from '../models/QuizModel';
 import ErrorHandler from '../utils/error';
 import { admin } from '../utils/firebase';
 import { getMimeType, retryGeminiApiCall } from '../utils/geminiApi';
-import { callGroqApi, extractGroqText, parseGroqJson } from '../utils/groqApi';
-import { callOpenRouterApi, extractOpenRouterText } from '../utils/openRouterApi';
+import { callOpenRouterApi, extractOpenRouterText, parseOpenRouterJson } from '../utils/openRouterApi';
 import { ProfileService } from './profileService';
 
 const db = admin.database();
@@ -138,7 +137,7 @@ Output Format (JSON array only, no additional text):
 
 			try {
 				const response = await callOpenRouterApi({
-					model: 'nvidia/nemotron-3-nano-30b-a3b:free',
+					model: 'openrouter/auto',
 					messages: [
 						{ role: 'system', content: systemPrompt },
 						{ role: 'user', content: userPrompt }
@@ -177,10 +176,10 @@ Output Format (JSON array only, no additional text):
 			}
 		}
 
-		// Parse output (works for both Groq and Gemini)
+		// Parse output (works for both OpenRouter and Gemini)
 		let newMcqs: any[] = [];
 		try {
-			newMcqs = parseGroqJson(rawText);
+			newMcqs = parseOpenRouterJson(rawText);
 		} catch (parseErr) {
 			// Fallback: try regex parsing
 			const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;

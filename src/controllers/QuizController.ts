@@ -11,7 +11,7 @@ import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
-import { callOpenRouterApi, extractOpenRouterText } from "../utils/openRouterApi";
+import { callOpenRouterApi, extractOpenRouterText, parseOpenRouterJson } from "../utils/openRouterApi";
 
 const createquiz = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -76,34 +76,37 @@ const createquiz = asyncWrapper(async (req, res, next) => {
             const needed = 50 - cachedQuestions.length;
             const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
 
-            const systemPrompt = `Role: Expert Exam Preparer AI. Task: Create exactly ${needed} high-quality, exam-style multiple-choice questions based ONLY on the provided chapter content to ensure comprehensive coverage.
+            const systemPrompt = `Role: Expert Exam Preparer AI.
 
-Strategy for "Smart" Generation:
-1. Comprehensive Coverage: Scan the entire text to identify ALL key concepts, definitions, figures, and critical details.
-2. Exam Focus: Prioritize information likely to be tested (e.g., "What is...", "Why does...", "How to...", distinctions between concepts).
-3. Difficulty Variety: Mix simple recall questions with conceptual application questions.
-4. Distractor Quality: Options b, c, and d must be plausible but clearly incorrect based on the text.
+Task:
+- Create exactly ${needed} exam-style multiple-choice questions based ONLY on the provided chapter content.
 
-Constraints:
-1. Source Material: Use ONLY the provided chapter content. Do NOT use external knowledge.
-2. Uniqueness: Strictly avoid duplicating or rephrasing these existing questions:
+Hard constraints (must follow exactly):
+- Source: Use ONLY the provided chapter content. Do NOT use external knowledge.
+- Uniqueness: Do NOT duplicate or closely rephrase any existing question below:
 ${existingTexts}
-3. Quantity: Generate exactly ${needed} questions.
-4. Output: VALID JSON ARRAY ONLY. No markdown formatting, no code blocks, no intro/outro text.
+- Quantity: Output exactly ${needed} items.
+- Output format: Return ONLY a VALID JSON ARRAY (no markdown, no code fences, no extra text).
+- Schema: Each item MUST be an object with exactly these keys:
+  - "question": string
+  - "options": array of exactly 4 strings, each starting with "a)", "b)", "c)", "d)" respectively
+  - "answer": one of "a" | "b" | "c" | "d" (must match the correct option)
+  - "explanation": short string that justifies the answer using information explicitly present in the chapter
 
-Question Format:
-- "question": Professional, clear, exam-style syntax.
-- "options": Array of 4 strings, labeled "a)", "b)", "c)", "d)".
-- "answer": The correct option letter ("a", "b", "c", or "d").
-- "explanation": Concise justification referencing the specific part of the text.
+Quality requirements:
+- Coverage: Spread questions across the whole chapter; include definitions, mechanisms, comparisons, steps, and implications.
+- Difficulty mix: Include recall + conceptual understanding + application/interpretation.
+- Distractors: Make wrong options plausible but clearly incorrect according to the chapter.
+- Precision: Avoid ambiguous wording (e.g., "all of the above"). Avoid trivia not supported by the text.
+- JSON safety: Use double quotes for all JSON strings and do not include trailing commas.
 
-Example Output:
+Example (structure only):
 [
   {
-    "question": "Which of the following best describes the function of X?",
-    "options": ["a) Definition 1", "b) Definition 2", "c) Definition 3", "d) Definition 4"],
+    "question": "...",
+    "options": ["a) ...", "b) ...", "c) ...", "d) ..."],
     "answer": "a",
-    "explanation": "The text defines X as..."
+    "explanation": "..."
   }
 ]`;
             let rawText: string;
@@ -111,7 +114,7 @@ Example Output:
             // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
             if (hasOvercontent) {
                 const openRouterResponse = await callOpenRouterApi({
-                    model: 'nvidia/nemotron-3-nano-30b-a3b:free',
+                    model: 'openrouter/auto',
                     messages: [
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.` }
@@ -143,7 +146,7 @@ Example Output:
             // Parse output
             let newMcqs: any[] = [];
             try {
-                newMcqs = JSON.parse(rawText);
+                newMcqs = parseOpenRouterJson(rawText);
             } catch {
                 // Fallback: try regex parsing
                 const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
@@ -629,34 +632,37 @@ const practiceMode = asyncWrapper(async (req, res, next) => {
             const needed = 50 - cachedQuestions.length;
             const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
 
-            const systemPrompt = `Role: Expert Exam Preparer AI. Task: Create exactly ${needed} high-quality, exam-style multiple-choice questions based ONLY on the provided chapter content to ensure comprehensive coverage.
+            const systemPrompt = `Role: Expert Exam Preparer AI.
 
-Strategy for "Smart" Generation:
-1. Comprehensive Coverage: Scan the entire text to identify ALL key concepts, definitions, figures, and critical details.
-2. Exam Focus: Prioritize information likely to be tested (e.g., "What is...", "Why does...", "How to...", distinctions between concepts).
-3. Difficulty Variety: Mix simple recall questions with conceptual application questions.
-4. Distractor Quality: Options b, c, and d must be plausible but clearly incorrect based on the text.
+Task:
+- Create exactly ${needed} exam-style multiple-choice questions based ONLY on the provided chapter content.
 
-Constraints:
-1. Source Material: Use ONLY the provided chapter content. Do NOT use external knowledge.
-2. Uniqueness: Strictly avoid duplicating or rephrasing these existing questions:
+Hard constraints (must follow exactly):
+- Source: Use ONLY the provided chapter content. Do NOT use external knowledge.
+- Uniqueness: Do NOT duplicate or closely rephrase any existing question below:
 ${existingTexts}
-3. Quantity: Generate exactly ${needed} questions.
-4. Output: VALID JSON ARRAY ONLY. No markdown formatting, no code blocks, no intro/outro text.
+- Quantity: Output exactly ${needed} items.
+- Output format: Return ONLY a VALID JSON ARRAY (no markdown, no code fences, no extra text).
+- Schema: Each item MUST be an object with exactly these keys:
+  - "question": string
+  - "options": array of exactly 4 strings, each starting with "a)", "b)", "c)", "d)" respectively
+  - "answer": one of "a" | "b" | "c" | "d" (must match the correct option)
+  - "explanation": short string that justifies the answer using information explicitly present in the chapter
 
-Question Format:
-- "question": Professional, clear, exam-style syntax.
-- "options": Array of 4 strings, labeled "a)", "b)", "c)", "d)".
-- "answer": The correct option letter ("a", "b", "c", or "d").
-- "explanation": Concise justification referencing the specific part of the text.
+Quality requirements:
+- Coverage: Spread questions across the whole chapter; include definitions, mechanisms, comparisons, steps, and implications.
+- Difficulty mix: Include recall + conceptual understanding + application/interpretation.
+- Distractors: Make wrong options plausible but clearly incorrect according to the chapter.
+- Precision: Avoid ambiguous wording (e.g., "all of the above"). Avoid trivia not supported by the text.
+- JSON safety: Use double quotes for all JSON strings and do not include trailing commas.
 
-Example Output:
+Example (structure only):
 [
   {
-    "question": "Which of the following best describes the function of X?",
-    "options": ["a) Definition 1", "b) Definition 2", "c) Definition 3", "d) Definition 4"],
+    "question": "...",
+    "options": ["a) ...", "b) ...", "c) ...", "d) ..."],
     "answer": "a",
-    "explanation": "The text defines X as..."
+    "explanation": "..."
   }
 ]`;
 
@@ -665,7 +671,7 @@ Example Output:
             // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
             if (hasOvercontent) {
                 const openRouterResponse = await callOpenRouterApi({
-                    model: 'nvidia/nemotron-3-nano-30b-a3b:free',
+                    model: 'openrouter/auto',
                     messages: [
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.` }
@@ -697,7 +703,7 @@ Example Output:
             // Parse output
             let newMcqs: any[] = [];
             try {
-                newMcqs = JSON.parse(rawText);
+                newMcqs = parseOpenRouterJson(rawText);
             } catch {
                 // Fallback: try regex parsing
                 const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;

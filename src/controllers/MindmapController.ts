@@ -7,7 +7,7 @@ import { AnalysisService } from "../services/analysisService";
 import { ProfileService } from "../services/profileService";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
-import { callGroqApi, extractGroqText, parseGroqJson } from "../utils/groqApi";
+import { callOpenRouterApi, extractOpenRouterText, parseOpenRouterJson } from "../utils/openRouterApi";
 
 const createMindmap = asyncWrapper(async (req, res, next) => {
     let { chapterId, regenerate }: { chapterId: string, regenerate: boolean } = req.body;
@@ -39,7 +39,7 @@ const createMindmap = asyncWrapper(async (req, res, next) => {
         }
     }
 
-    // ✅ Generate new mindmap - use Groq if overcontent exists, otherwise fallback to Gemini
+    // ✅ Generate new mindmap - use OpenRouter if overcontent exists, otherwise fallback to Gemini
     const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
 
     if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
@@ -126,11 +126,11 @@ Guidelines:
     let rawText: string;
 
     if (hasOvercontent) {
-        // ✅ Use Groq with extracted text (fast path)
+        // ✅ Use OpenRouter with extracted text (fast path)
         const userPrompt = `Process the following content and generate a mindmap:\n\n${chapter.overcontent}`;
 
-        const response = await callGroqApi({
-            model: 'openai/gpt-oss-120b' as const,
+        const response = await callOpenRouterApi({
+            model: 'openrouter/auto' as const,
             messages: [
                 { role: 'system' as const, content: systemPrompt },
                 { role: 'user' as const, content: userPrompt }
@@ -139,7 +139,7 @@ Guidelines:
             max_tokens: 8192,
         });
 
-        rawText = extractGroqText(response);
+        rawText = extractOpenRouterText(response);
     } else {
         // ✅ Fallback to Gemini with PDF (multi-modal path)
         console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
@@ -168,10 +168,10 @@ Guidelines:
         rawText = data.candidates[0].content.parts[0].text.trim();
     }
 
-    // ✅ Parse JSON response (works for both Groq and Gemini)
+    // ✅ Parse JSON response (works for both OpenRouter and Gemini)
     let mindmapJson;
     try {
-        mindmapJson = parseGroqJson(rawText);
+        mindmapJson = parseOpenRouterJson(rawText);
     } catch (error) {
         console.error("❌ Failed to parse response:", rawText);
         return next(
@@ -432,7 +432,7 @@ Guidelines:
     let generatedContent: string;
 
     if (hasOvercontent) {
-        // ✅ Use Groq with extracted text (fast path)
+        // ✅ Use OpenRouter with extracted text (fast path)
         const userPrompt = `User's topic: "${text}"
 
 Chapter content to analyze:
@@ -440,8 +440,8 @@ ${chapter.overcontent}
 
 Generate smart notes about "${text}" based on the chapter content above.`;
 
-        const response = await callGroqApi({
-            model: 'openai/gpt-oss-120b' as const,
+        const response = await callOpenRouterApi({
+            model: 'openrouter/auto' as const,
             messages: [
                 { role: 'system' as const, content: systemPrompt },
                 { role: 'user' as const, content: userPrompt }
@@ -450,7 +450,7 @@ Generate smart notes about "${text}" based on the chapter content above.`;
             max_tokens: 1024,
         });
 
-        generatedContent = extractGroqText(response);
+        generatedContent = extractOpenRouterText(response);
     } else {
         // ✅ Fallback to Gemini with PDF (multi-modal path)
         console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');

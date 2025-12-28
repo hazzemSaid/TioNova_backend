@@ -6,7 +6,7 @@ import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
 import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
-import { callOpenRouterApi, extractOpenRouterText } from "../utils/openRouterApi";
+import { callOpenRouterApi, extractOpenRouterText, parseOpenRouterJson } from "../utils/openRouterApi";
 
 const summarizecchapter = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -54,7 +54,7 @@ const summarizecchapter = asyncWrapper(async (req, res, next) => {
         }
     }
 
-    // ✅ Generate new summary - use Groq if overcontent exists, otherwise fallback to Gemini
+    // ✅ Generate new summary - use OpenRouter if overcontent exists, otherwise fallback to Gemini
     const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
 
     if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
@@ -106,7 +106,7 @@ Guidelines:
     // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
     if (hasOvercontent) {
         const openRouterResponse = await callOpenRouterApi({
-            model: 'nvidia/nemotron-3-nano-30b-a3b:free',
+            model: 'openrouter/auto',
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: `Generate the JSON summary for this chapter content:\n\n${chapter.overcontent}` }
@@ -137,16 +137,11 @@ Guidelines:
         rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
 
-    // Try JSON.parse first, then attempt repair if needed
+    // Parse output
     try {
-        summaryJson = JSON.parse(rawText);
+        summaryJson = parseOpenRouterJson(rawText);
     } catch {
-        try {
-            const { jsonrepair } = require("jsonrepair");
-            summaryJson = JSON.parse(jsonrepair(rawText));
-        } catch (err) {
-            return next(ErrorHandler.createError("Invalid JSON response from AI service", 400));
-        }
+        return next(ErrorHandler.createError("Invalid JSON response from AI service", 400));
     }
 
     // Save in MongoDB

@@ -501,34 +501,39 @@ const forgotPassword = asyncWrapper(async (req, res, next) => {
 	const user = await userModel.findOne({ email });
 
 	if (!user) {
+		// Return success message for security (don't reveal if email exists)
 		return res.status(200).json({
 			success: true,
-			message: "If this email exists, you will receive a password reset code."
+			message: "If this email exists in our records, you will receive a password reset code"
 		});
 	}
 
-	const resetCode = generateVerificationCode(); // 6-digit
-	const hashedCode = await hash(resetCode);
-	const resetExpiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
-
-	const resetToken = JWT.sign(
-		{ email, purpose: 'password-reset' },
-		requiredEnvVars.JWT_ACCESS_SECRET as string,
-		{ expiresIn: '30m' }
-	);
-
-	user.resetPasswordCode = hashedCode;
-	user.resetPasswordToken = resetToken;
-	user.resetPasswordExpire = resetExpiry;
-	await user.save();
-
 	try {
+		const resetCode = generateVerificationCode(); // 6-digit
+		const hashedCode = await hash(resetCode);
+		const resetExpiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+		const resetToken = JWT.sign(
+			{ email, purpose: 'password-reset' },
+			requiredEnvVars.JWT_ACCESS_SECRET as string,
+			{ expiresIn: '30m' }
+		);
+
+		// Update user with reset credentials
+		user.resetPasswordCode = hashedCode;
+		user.resetPasswordToken = resetToken;
+		user.resetPasswordExpire = resetExpiry;
+		await user.save();
+
+		// Send reset email
 		await sendEmail(email, resetCode);
+		
 		return res.status(200).json({
 			success: true,
 			message: "Password reset code sent to your email"
 		});
 	} catch (error) {
+		console.error('Error in forgotPassword:', error);
 		return next(ErrorHandler.createError("Failed to send reset email", 500));
 	}
 });
@@ -541,24 +546,42 @@ const verifyCode = asyncWrapper(async (req, res, next) => {
 	}
 
 	const { email, code } = req.body;
-	const user = await userModel.findOne({ email }).select('+resetPasswordCode +resetPasswordToken +resetPasswordExpire');
-
-	if (!user || !user.resetPasswordToken || !user.resetPasswordCode) {
-		return next(ErrorHandler.createError("Invalid reset request", 400));
-	}
-
-	// Check if code expired
-	if (user.resetPasswordExpire && new Date() > user.resetPasswordExpire) {
-		return next(ErrorHandler.createError("Reset code expired", 401));
-	}
 
 	try {
-		const decoded = JWT.verify(user.resetPasswordToken, requiredEnvVars.JWT_ACCESS_SECRET as string) as any;
+		const user = await userModel.findOne({ email }).select('+resetPasswordCode +resetPasswordToken +resetPasswordExpire');
 
-		if (decoded.email !== email || decoded.purpose !== 'password-reset') {
-			throw ErrorHandler.createError('Invalid token', 401);
+		if (!user || !user.resetPasswordToken || !user.resetPasswordCode) {
+			return next(ErrorHandler.createError("Invalid reset request", 400));
 		}
 
+		// Check if code expired
+		if (user.resetPasswordExpire && new Date() > user.resetPasswordExpire) {
+			// Clear expired reset data
+			user.resetPasswordCode = undefined;
+			user.resetPasswordToken = undefined;
+			user.resetPasswordExpire = undefined;
+			await user.save();
+			return next(ErrorHandler.createError("Reset code expired. Please request a new one.", 401));
+		}
+
+		// Verify reset token
+		let decoded: any;
+		try {
+			decoded = JWT.verify(user.resetPasswordToken, requiredEnvVars.JWT_ACCESS_SECRET as string);
+		} catch (error) {
+			// Clear invalid reset data
+			user.resetPasswordCode = undefined;
+			user.resetPasswordToken = undefined;
+			user.resetPasswordExpire = undefined;
+			await user.save();
+			return next(ErrorHandler.createError("Invalid or expired reset token", 401));
+		}
+
+		if (decoded.email !== email || decoded.purpose !== 'password-reset') {
+			return next(ErrorHandler.createError('Invalid token purpose', 401));
+		}
+
+		// Verify the code
 		const isCodeValid = await compare(code, user.resetPasswordCode);
 		if (!isCodeValid) {
 			return next(ErrorHandler.createError("Invalid verification code", 401));
@@ -570,6 +593,7 @@ const verifyCode = asyncWrapper(async (req, res, next) => {
 			resetToken: user.resetPasswordToken
 		});
 	} catch (error) {
+		console.error('Error in verifyCode:', error);
 		return next(ErrorHandler.createError("Invalid or expired reset token", 401));
 	}
 });
@@ -582,24 +606,42 @@ const resetPassword = asyncWrapper(async (req, res, next) => {
 	}
 
 	const { email, code, password } = req.body;
-	const user = await userModel.findOne({ email }).select('+resetPasswordCode +resetPasswordToken +resetPasswordExpire');
-
-	if (!user || !user.resetPasswordToken) {
-		return next(ErrorHandler.createError("Invalid reset request", 400));
-	}
-
-	// Check if code expired
-	if (user.resetPasswordExpire && new Date() > user.resetPasswordExpire) {
-		return next(ErrorHandler.createError("Reset code expired", 401));
-	}
 
 	try {
-		const decoded = JWT.verify(user.resetPasswordToken, requiredEnvVars.JWT_ACCESS_SECRET as string) as any;
+		const user = await userModel.findOne({ email }).select('+resetPasswordCode +resetPasswordToken +resetPasswordExpire');
 
-		if (decoded.email !== email || decoded.purpose !== 'password-reset') {
-			throw ErrorHandler.createError('Invalid token', 401);
+		if (!user || !user.resetPasswordToken) {
+			return next(ErrorHandler.createError("Invalid reset request", 400));
 		}
 
+		// Check if code expired
+		if (user.resetPasswordExpire && new Date() > user.resetPasswordExpire) {
+			// Clear expired reset data
+			user.resetPasswordCode = undefined;
+			user.resetPasswordToken = undefined;
+			user.resetPasswordExpire = undefined;
+			await user.save();
+			return next(ErrorHandler.createError("Reset code expired. Please request a new one.", 401));
+		}
+
+		// Verify reset token
+		let decoded: any;
+		try {
+			decoded = JWT.verify(user.resetPasswordToken, requiredEnvVars.JWT_ACCESS_SECRET as string);
+		} catch (error) {
+			// Clear invalid reset data
+			user.resetPasswordCode = undefined;
+			user.resetPasswordToken = undefined;
+			user.resetPasswordExpire = undefined;
+			await user.save();
+			return next(ErrorHandler.createError("Invalid or expired reset token", 401));
+		}
+
+		if (decoded.email !== email || decoded.purpose !== 'password-reset') {
+			return next(ErrorHandler.createError('Invalid token purpose', 401));
+		}
+
+		// Verify reset code
 		const isCodeValid = await compare(code, user.resetPasswordCode || '');
 		if (!isCodeValid) {
 			return next(ErrorHandler.createError("Invalid verification code", 401));
@@ -608,14 +650,14 @@ const resetPassword = asyncWrapper(async (req, res, next) => {
 		// Update password (will be hashed by pre-save middleware)
 		user.password = password;
 
-		// Cleanup reset fields
+		// Cleanup reset fields - invalidate all sessions
 		user.resetPasswordCode = undefined;
 		user.resetPasswordToken = undefined;
 		user.resetPasswordExpire = undefined;
-		user.refreshtoken = undefined; // invalidate sessions
+		user.refreshtoken = undefined; // invalidate all sessions
 		await user.save();
 
-		// Generate new tokens
+		// Generate new tokens for immediate login
 		const { accessToken, refreshToken } = generateTokens(user);
 		user.refreshtoken = await hash(refreshToken);
 		await user.save();
@@ -626,6 +668,7 @@ const resetPassword = asyncWrapper(async (req, res, next) => {
 			message: "Password reset successfully"
 		});
 	} catch (error) {
+		console.error('Error in resetPassword:', error);
 		return next(ErrorHandler.createError("Invalid or expired reset token", 401));
 	}
 });

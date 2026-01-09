@@ -33,10 +33,20 @@ app.use(express.json());
 app.use(express.static("static"));
 app.use(
   cors({
-    origin: "*",
+    origin: "*", // Or specific origins like ['https://tionova.web.app', 'http://localhost:3000']
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept"],
     credentials: true,
   })
 );
+
+// Manually handle OPTIONS preflight
+app.options(/.*/, (req, res) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept");
+  res.sendStatus(204);
+});
 
 // Configure routes synchronously (required for Vercel)
 app.get("/", (req, res) => {

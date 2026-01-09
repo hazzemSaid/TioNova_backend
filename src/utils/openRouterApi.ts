@@ -11,6 +11,12 @@ interface OpenRouterRequestBody {
     messages: OpenRouterMessage[];
     temperature?: number;
     max_tokens?: number;
+    maxOutputTokens?: number;
+    generationConfig?: {
+        maxOutputTokens?: number;
+        temperature?: number;
+        [key: string]: any;
+    };
     top_p?: number;
     stream?: boolean;
     reasoning?: { enabled: boolean };
@@ -40,6 +46,13 @@ export async function callOpenRouterApi(
         requestBody.model = 'openrouter/auto';
     }
 
+    // Map Gemini-style configuration if present
+    if (requestBody.generationConfig) {
+        if (requestBody.temperature === undefined && requestBody.generationConfig.temperature !== undefined) {
+            requestBody.temperature = requestBody.generationConfig.temperature;
+        }
+    }
+
     // Set default temperature if not provided
     if (requestBody.temperature === undefined) {
         requestBody.temperature = 0.7;
@@ -50,9 +63,17 @@ export async function callOpenRouterApi(
         requestBody.reasoning = { enabled: true };
     }
 
+    // Map maxOutputTokens to max_tokens if provided (Gemini compatibility)
+    if (requestBody.maxOutputTokens && !requestBody.max_tokens) {
+        requestBody.max_tokens = requestBody.maxOutputTokens;
+    } else if ((requestBody as any).generationConfig?.maxOutputTokens && !requestBody.max_tokens) {
+        // Handle nested Gemini-style config
+        requestBody.max_tokens = (requestBody as any).generationConfig.maxOutputTokens;
+    }
+
     // Set default max_tokens if not provided to avoid massive default reservations
     if (!requestBody.max_tokens) {
-        requestBody.max_tokens = 8192;
+        requestBody.max_tokens = 100000;
     }
 
     let lastError: any;
@@ -102,12 +123,47 @@ export async function callOpenRouterApi(
 
 /**
  * Helper function to extract text content from OpenRouter API response
+ * Handles both regular content and reasoning models (like DeepSeek R1)
  */
 export function extractOpenRouterText(response: any): string {
-    if (!response || !response.choices || response.choices.length === 0) {
+    if (!response) {
+        console.error("OpenRouter response is null or undefined");
         return '';
     }
-    return response.choices[0].message.content || '';
+    
+    if (!response.choices || response.choices.length === 0) {
+        console.error("OpenRouter response missing choices:", JSON.stringify(response, null, 2));
+        return '';
+    }
+    
+    const message = response.choices[0].message;
+    if (!message) {
+        console.error("OpenRouter response missing message:", JSON.stringify(response.choices[0], null, 2));
+        return '';
+    }
+    
+    // First try to get content from the standard content field
+    if (message.content && message.content.trim().length > 0) {
+        return message.content;
+    }
+    
+    // For reasoning models (like DeepSeek R1), content might be in the reasoning field
+    if (message.reasoning && message.reasoning.trim().length > 0) {
+        console.log("Using reasoning field instead of content field");
+        return message.reasoning;
+    }
+    
+    // Also check reasoning_details array if available
+    if (message.reasoning_details && Array.isArray(message.reasoning_details) && message.reasoning_details.length > 0) {
+        const reasoningText = message.reasoning_details[0]?.text;
+        if (reasoningText && reasoningText.trim().length > 0) {
+            console.log("Using reasoning_details[0].text instead of content field");
+            return reasoningText;
+        }
+    }
+    
+    console.error("OpenRouter response has no content in any field:", JSON.stringify(message, null, 2));
+    return '';
 }
 /**
  * Helper function to parse JSON from OpenRouter response

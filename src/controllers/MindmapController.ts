@@ -6,8 +6,7 @@ import NodeModel from "../models/NodeModel";
 import { AnalysisService } from "../services/analysisService";
 import { ProfileService } from "../services/profileService";
 import ErrorHandler from "../utils/error";
-import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
-import { callOpenRouterApi, extractOpenRouterText, parseOpenRouterJson } from "../utils/openRouterApi";
+import { callOpenRouterApi, extractOpenRouterText } from "../utils/openRouterApi";
 
 const createMindmap = asyncWrapper(async (req, res, next) => {
     let { chapterId, regenerate }: { chapterId: string, regenerate: boolean } = req.body;
@@ -39,7 +38,7 @@ const createMindmap = asyncWrapper(async (req, res, next) => {
         }
     }
 
-    // ✅ Generate new mindmap - use OpenRouter if overcontent exists, otherwise fallback to Gemini
+    // ✅ Generate new mindmap - Always use Gemini (Unified path)
     const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
 
     if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
@@ -47,131 +46,95 @@ const createMindmap = asyncWrapper(async (req, res, next) => {
     }
 
     // Prepare system prompt
-    const systemPrompt = `You are an expert knowledge extraction AI that **converts educational content into a structured flat mindmap JSON**.
+    const systemPrompt = `You are an expert at converting educational content into visual mindmaps.
 
-Task:
-- Carefully analyze the provided content and extract its conceptual hierarchy.
-- Output **only valid JSON** with a flat array of nodes.
-- Do not include any text, markdown, comments, or explanations outside the JSON.
-- The output must be **directly parseable JSON** (no errors, no trailing commas).
+TASK: Create a structured flat mindmap JSON from the provided content.
 
-Schema:
-
+OUTPUT SCHEMA:
 {
-  "title": "Main Topic Title",
+  "title": "Main Topic",
   "nodes": [
     {
       "id": "node_0",
-      "title": "Machine Learning",
-      "content": "Overview of machine learning concepts.",
-      "icon": "🤖",
+      "title": "Main Topic",
+      "content": "Brief overview of this topic.",
+      "icon": "🎯",
       "color": "#0084FF",
       "children": ["node_1", "node_2"],
       "isRoot": true
     },
     {
       "id": "node_1",
-      "title": "Supervised Learning",
-      "content": "Models trained with labeled data.",
+      "title": "Subtopic",
+      "content": "What this subtopic covers.",
       "icon": "📘",
       "color": "#4A90E2",
-      "children": ["node_3", "node_4"]
-    },
-    {
-      "id": "node_2",
-      "title": "Unsupervised Learning",
-      "content": "Models that find patterns in unlabeled data.",
-      "icon": "📙",
-      "color": "#50C878",
-      "children": []
-    },
-    {
-      "id": "node_3",
-      "title": "Regression",
-      "content": "Predicts continuous outputs.",
-      "icon": "📈",
-      "color": "#7ED321",
-      "children": []
-    },
-    {
-      "id": "node_4",
-      "title": "Classification",
-      "content": "Predicts discrete categories.",
-      "icon": "🧩",
-      "color": "#F5A623",
       "children": []
     }
   ]
 }
 
-Guidelines:
-- Output a flat array of nodes (not nested)
-- Each node has an "id" (e.g., "node_0", "node_1", etc.)
-- The "children" field contains an array of child node IDs (strings), not objects
-- Mark exactly ONE node with "isRoot": true (this is the main topic)
-- All other nodes should NOT have the isRoot field or set it to false
-- Create 8-15 total nodes covering the main concepts
-- Use relevant educational emojis (📚, 📖, 📝, 🎯, 💡, 🔬, 📊, 🧮, 🔍, ⚡, 🌟, 🎓, 🤖, 📈, 🧩, etc.)
-- Use distinct hex colors for visual organization:
-  - Blues: #0084FF, #4A90E2, #0EA5E9, #06B6D4
-  - Greens: #50C878, #7ED321, #10B981, #22C55E
-  - Purples: #8B5CF6, #A855F7, #C084FC
-  - Oranges: #F59E0B, #F97316, #FB923C, #F5A623
-  - Reds: #EF4444, #F43F5E, #EC4899
-- Keep titles concise (2-5 words maximum)
-- Keep content brief and academic (1-2 sentences)
-- Never output empty nodes or arrays
-- Never output markdown, code fences, or explanations — only the JSON object`;
+RULES:
+1. Flat array of nodes (not nested objects)
+2. Each node has unique "id" (node_0, node_1, etc.)
+3. "children" contains array of child node IDs (strings)
+4. Exactly ONE node has "isRoot": true
+5. Create 8-15 nodes covering main concepts
+6. Titles: 2-5 words maximum
+7. Content: 1-2 sentences, clear and educational
+8. Use relevant emojis: 📚 📖 📝 🎯 💡 🔬 📊 🧮 🔍 ⚡ 🌟 🎓 🤖 📈 🧩
+9. Use distinct hex colors: #0084FF #4A90E2 #50C878 #7ED321 #8B5CF6 #F59E0B #EF4444
+
+OUTPUT: Valid JSON only (no markdown, no explanations)`;
 
     let rawText: string;
 
     if (hasOvercontent) {
-        // ✅ Use OpenRouter with extracted text (fast path)
-        const userPrompt = `Process the following content and generate a mindmap:\n\n${chapter.overcontent}`;
+        // ✅ Use OpenRouter with extracted text
+        const prompt = `${systemPrompt}\n\nProcess the following content and generate a mindmap:\n\n${chapter.overcontent}`;
 
-        const response = await callOpenRouterApi({
-            model: 'openrouter/auto' as const,
+        const data = await callOpenRouterApi({
+            model: "tngtech/deepseek-r1t2-chimera:free",
             messages: [
-                { role: 'system' as const, content: systemPrompt },
-                { role: 'user' as const, content: userPrompt }
+                { role: 'user', content: prompt }
             ],
-            temperature: 0.2,
-            max_tokens: 8192,
+            maxOutputTokens: 16384
         });
 
-        rawText = extractOpenRouterText(response);
-    } else {
-        // ✅ Fallback to Gemini with PDF (multi-modal path)
-        console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
+        rawText = extractOpenRouterText(data);
 
-        const base64File = chapter.content.toString("base64");
-        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-
-        const geminiPrompt = `${systemPrompt}\n\nProcess the content in this PDF and generate a mindmap.`;
-
-        const response = await retryGeminiApiCall({
-            contents: [{
-                parts: [
-                    { text: geminiPrompt },
-                    { inlineData: { mimeType, data: base64File } }
-                ]
-            }],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
-        });
-
-        const data = await response.json();
-
-        if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
-            return next(ErrorHandler.createError("No response from Gemini API", 500));
+        if (!rawText) {
+            console.error("OpenRouter Empty Response:", JSON.stringify(data, null, 2));
+            return next(ErrorHandler.createError("No response content from OpenRouter API. Please check API response.", 500));
         }
+    } else {
+        // ✅ Fallback to OpenRouter for PDF content
+        console.log('⚠️ overcontent is null, falling back to OpenRouter API for PDF');
 
-        rawText = data.candidates[0].content.parts[0].text.trim();
+        const prompt = `${systemPrompt}\n\nProcess the content in the PDF and generate a mindmap.`;
+
+        const data = await callOpenRouterApi({
+            model: "tngtech/deepseek-r1t2-chimera:free",
+            messages: [
+                { role: 'user', content: prompt }
+            ],
+            maxOutputTokens: 16384
+        });
+
+        rawText = extractOpenRouterText(data);
+
+        if (!rawText) {
+            console.error("OpenRouter Empty Response (PDF):", JSON.stringify(data, null, 2));
+            return next(ErrorHandler.createError("No response content from OpenRouter API. Please check API response.", 500));
+        }
     }
 
     // ✅ Parse JSON response (works for both OpenRouter and Gemini)
     let mindmapJson;
     try {
-        mindmapJson = parseOpenRouterJson(rawText);
+        // Remove markdown code blocks if present (Gemini typically wraps JSON in ```json ... ```)
+        const cleanedText = rawText.replace(/```json\n?|\n?```/g, "").trim();
+        mindmapJson = JSON.parse(cleanedText);
     } catch (error) {
         console.error("❌ Failed to parse response:", rawText);
         return next(
@@ -409,80 +372,78 @@ const generatecontent = asyncWrapper(async (req, res, next) => {
     }
 
     // Prepare system prompt
-    const systemPrompt = `You are an expert educational content generator that creates concise, structured notes based on user input and chapter content.
+    const systemPrompt = `You are an expert note-taker. Generate concise, smart notes on the user's topic.
 
-Format Requirements:
-- Start EACH point with a dash and space: "- "
-- Format: "- First point content\\n- Second point content\\n- Third point content"
-- All points should be on separate lines
-- Example format:
-  - First main idea here (1-2 sentences)
-  - Second main idea here (1-2 sentences)
-  - Third main idea here (1-2 sentences)
+OUTPUT FORMAT:
+- First key point (1-2 sentences)
+- Second key point (1-2 sentences)
+- Third key point (1-2 sentences)
+- Fourth key point (optional)
+- Fifth key point (optional)
 
-Guidelines:
-- Keep ALL content brief and academic (1-2 sentences per point maximum)
-- Focus only on the user's topic - stay relevant and concise
-- Maintain academic tone with clear, direct language
-- Provide 3-5 main points ONLY
-- Each point should be 1-2 sentences maximum
-- Be extremely concise - no lengthy explanations
-- Return ONLY the generated notes (no meta-commentary or introductions)`;
+RULES:
+1. Each point starts with "- " on a new line
+2. 3-5 points maximum
+3. 1-2 sentences per point
+4. Be direct - no filler words
+5. Paraphrase - don't copy text directly
+6. Stay on topic - only relevant information
+7. Academic tone - clear and professional
+8. No introductions or conclusions - just the notes`;
 
     let generatedContent: string;
 
     if (hasOvercontent) {
-        // ✅ Use OpenRouter with extracted text (fast path)
-        const userPrompt = `User's topic: "${text}"
+        // ✅ Use OpenRouter with extracted text
+        const prompt = `${systemPrompt}
+
+User's topic: "${text}"
 
 Chapter content to analyze:
 ${chapter.overcontent}
 
 Generate smart notes about "${text}" based on the chapter content above.`;
 
-        const response = await callOpenRouterApi({
-            model: 'openrouter/auto' as const,
+        const data = await callOpenRouterApi({
+            model: "tngtech/deepseek-r1t2-chimera:free",
             messages: [
-                { role: 'system' as const, content: systemPrompt },
-                { role: 'user' as const, content: userPrompt }
+                { role: 'user', content: prompt }
             ],
-            temperature: 0.4,
-            max_tokens: 1024,
+            maxOutputTokens: 1024
         });
 
-        generatedContent = extractOpenRouterText(response);
+        generatedContent = extractOpenRouterText(data);
+
+        if (!generatedContent) {
+            console.error("OpenRouter Empty Response (generatecontent):", JSON.stringify(data, null, 2));
+            return next(ErrorHandler.createError("No response content from OpenRouter API. Please check API response.", 500));
+        }
     } else {
-        // ✅ Fallback to Gemini with PDF (multi-modal path)
-        console.log('⚠️ overcontent is null, falling back to Gemini API with PDF');
+        // ✅ Fallback to OpenRouter for PDF content
+        console.log('⚠️ overcontent is null, falling back to OpenRouter API for PDF');
 
-        const base64File = chapter.content.toString("base64");
-        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-
-        const geminiPrompt = `${systemPrompt}
+        const prompt = `${systemPrompt}
 
 User's topic: "${text}"
 
-Chapter content is in the attached PDF.
+Chapter content is in an attached PDF.
 
-Generate smart notes about "${text}" based on the chapter content in the PDF.`;
+Generate smart notes about "${text}" based on the chapter content.`;
 
-        const response = await retryGeminiApiCall({
-            contents: [{
-                parts: [
-                    { text: geminiPrompt },
-                    { inlineData: { mimeType, data: base64File } }
-                ]
-            }],
-            generationConfig: { temperature: 0.4, maxOutputTokens: 1024 }
+        const data = await callOpenRouterApi({
+            model: "tngtech/deepseek-r1t2-chimera:free",
+            messages: [
+                { role: 'user', content: prompt }
+            ],
+            maxOutputTokens: 1024
         });
 
-        const data = await response.json();
+        generatedContent = extractOpenRouterText(data);
 
-        if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
-            return next(ErrorHandler.createError("No response from Gemini API", 500));
+        if (!generatedContent) {
+            console.error("OpenRouter Empty Response (generatecontent PDF):", JSON.stringify(data, null, 2));
+            return next(ErrorHandler.createError("No response content from OpenRouter API. Please check API response.", 500));
         }
-
-        generatedContent = data.candidates[0].content.parts[0].text.trim();
     }
 
     return res.status(200).json({

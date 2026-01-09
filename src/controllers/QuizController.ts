@@ -10,8 +10,7 @@ import { ProfileService } from "../services/profileService";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
-import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
-import { callOpenRouterApi, extractOpenRouterText, parseOpenRouterJson } from "../utils/openRouterApi";
+import { callOpenRouterApi, extractOpenRouterText } from "../utils/openRouterApi";
 
 const createquiz = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -26,6 +25,7 @@ const createquiz = asyncWrapper(async (req, res, next) => {
     let quizTitle: string = "";
 
     try {
+        // ✅ Load from cache using helper - DISABLED as per request
         // ✅ Load from cache using helper
         const cachedQuiz = await CacheHelper.getCachedQuiz(chapterId);
 
@@ -35,15 +35,28 @@ const createquiz = asyncWrapper(async (req, res, next) => {
             cachedQuestions = cachedQuiz.questions;
         }
 
-        // ✅ Load from DB if cache empty
+        // ✅ Load from DB if cache empty (or bypassed)
         if (cachedQuestions.length === 0) {
-            const existingQuiz = await QuizModel.findOne({ chapterId }).populate("questions");
+            // Find ALL quizzes for this chapter to pool questions
+            const existingQuizzes = await QuizModel.find({ chapterId }).populate("questions");
 
-            if (existingQuiz) {
-                quiz = existingQuiz;
-                quizId = existingQuiz._id.toString();
-                quizTitle = existingQuiz.title;
-                cachedQuestions = existingQuiz.questions.map((q: any) => ({
+            if (existingQuizzes.length > 0) {
+                // Use the first one as reference
+                quiz = existingQuizzes[0];
+                quizId = quiz._id.toString();
+                quizTitle = quiz.title;
+
+                // Aggregate unique questions
+                const uniqueQs = new Map();
+                existingQuizzes.forEach((qz: any) => {
+                    if (qz.questions) {
+                        qz.questions.forEach((q: any) => {
+                            if (q && q._id) uniqueQs.set(q._id.toString(), q);
+                        });
+                    }
+                });
+
+                cachedQuestions = Array.from(uniqueQs.values()).map((q: any) => ({
                     _id: q._id,
                     question: q.question,
                     options: q.options,
@@ -52,14 +65,17 @@ const createquiz = asyncWrapper(async (req, res, next) => {
                 // Cache it
                 await CacheHelper.cacheQuiz(
                     chapterId,
-                    { quizId, title: quizTitle, questions: cachedQuestions },
+                    { quizId: quizId as string, title: quizTitle, questions: cachedQuestions },
                     CacheKeys.TTL.ONE_DAY
                 );
             }
         }
 
-        // ✅ Generate new questions if less than 50
-        if (cachedQuestions.length < 50) {
+        // ✅ Generate new questions if less than 40 (target pool size)
+        const TARGET_POOL_SIZE = 40;
+        const RETURN_COUNT = 20;
+
+        if (cachedQuestions.length < TARGET_POOL_SIZE) {
             const chapter = await ChapterModel.findById(chapterId);
 
             if (!chapter) {
@@ -73,80 +89,96 @@ const createquiz = asyncWrapper(async (req, res, next) => {
             }
 
             quizTitle = chapter.title;
-            const needed = 50 - cachedQuestions.length;
+            const needed = TARGET_POOL_SIZE - cachedQuestions.length;
             const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
 
-            const systemPrompt = `Role: Expert Exam Preparer AI.
+            const systemPrompt = `You are a senior professor creating a FINAL EXAM. Generate smart, direct multiple-choice questions.
 
-Task:
-- Create exactly ${needed} exam-style multiple-choice questions based ONLY on the provided chapter content.
+CRITICAL INSTRUCTIONS:
+1. PARAPHRASE - Never copy text directly from the content. Rephrase concepts in your own words.
+2. TEST UNDERSTANDING - Questions should verify the student truly understands, not just memorized text.
+3. BE DIRECT - Ask clear, straightforward questions. No unnecessary complexity.
+4. EXAM QUALITY - Questions must be professional, like a real university exam.
 
-Hard constraints (must follow exactly):
-- Source: Use ONLY the provided chapter content. Do NOT use external knowledge.
-- Uniqueness: Do NOT duplicate or closely rephrase any existing question below:
+QUESTION STYLE:
+- Use active voice and clear language
+- Test: understanding of concepts, ability to distinguish similar terms, cause-effect relationships, practical applications
+- Good: "What is the main purpose of X?" / "Which best describes Y?" / "How does A affect B?"
+- Avoid: "According to..." / "The text states..." / "As mentioned..."
+
+SMART QUESTION EXAMPLES:
+- Instead of "What is photosynthesis?" → "What is the primary outcome of photosynthesis in plants?"
+- Instead of copying a definition → Ask about its function, importance, or relationship to other concepts
+- Test recognition of correct vs incorrect statements about key topics
+
+REQUIREMENTS:
+- ${needed} questions total
+- 4 options each: a), b), c), d)
+- One correct answer (a/b/c/d)
+- Brief explanation (paraphrased, no quotes from source)
+- All options must be plausible
+
+SKIP IF SIMILAR TO:
 ${existingTexts}
-- Quantity: Output exactly ${needed} items.
-- Output format: Return ONLY a VALID JSON ARRAY (no markdown, no code fences, no extra text).
-- Schema: Each item MUST be an object with exactly these keys:
-  - "question": string
-  - "options": array of exactly 4 strings, each starting with "a)", "b)", "c)", "d)" respectively
-  - "answer": one of "a" | "b" | "c" | "d" (must match the correct option)
-  - "explanation": short string that justifies the answer using information explicitly present in the chapter
 
-Quality requirements:
-- Coverage: Spread questions across the whole chapter; include definitions, mechanisms, comparisons, steps, and implications.
-- Difficulty mix: Include recall + conceptual understanding + application/interpretation.
-- Distractors: Make wrong options plausible but clearly incorrect according to the chapter.
-- Precision: Avoid ambiguous wording (e.g., "all of the above"). Avoid trivia not supported by the text.
-- JSON safety: Use double quotes for all JSON strings and do not include trailing commas.
+OUTPUT FORMAT (JSON array only):
+[{"question":"...","options":["a) ...","b) ...","c) ...","d) ..."],"answer":"a","explanation":"..."}]`;
 
-Example (structure only):
-[
-  {
-    "question": "...",
-    "options": ["a) ...", "b) ...", "c) ...", "d) ..."],
-    "answer": "a",
-    "explanation": "..."
-  }
-]`;
+            // ✅ Use Gemini for both text and PDF content (Unified path)
             let rawText: string;
 
-            // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
             if (hasOvercontent) {
-                const openRouterResponse = await callOpenRouterApi({
-                    model: 'openrouter/auto',
+                // Use OpenRouter with extracted text
+                const geminiPrompt = `${systemPrompt}
+
+REFERENCE MATERIAL (use facts only, do not mention this source):
+${chapter.overcontent}
+
+Generate ${needed} exam questions now.`;
+
+                const data = await callOpenRouterApi({
+                    model: "tngtech/deepseek-r1t2-chimera:free",
                     messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.` }
+                        { role: 'user', content: geminiPrompt }
                     ],
-                    temperature: 0.7
+                    maxOutputTokens: 5000 // Reduced to fit within credit limits
                 });
-                rawText = extractOpenRouterText(openRouterResponse);
+
+                rawText = extractOpenRouterText(data);
+
+                if (!rawText) {
+                    console.error("OpenRouter Empty Response:", JSON.stringify(data, null, 2));
+                    throw new Error("No response content from OpenRouter API");
+                }
             } else {
-                // Fallback to Gemini for PDF content
+                // PDF content without extracted text - OpenRouter fallback
                 const base64File = chapter.content.toString("base64");
-                const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-                const geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
+                const pdfPrompt = `${systemPrompt}\n\nProcess PDF content and generate ${needed} quiz questions.`;
 
-                const requestBody = {
-                    contents: [{
-                        parts: [
-                            { text: geminiPrompt },
-                            { inlineData: { mimeType, data: base64File } }
-                        ]
-                    }],
-                    generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
-                };
+                const data = await callOpenRouterApi({
+                    model: "tngtech/deepseek-r1t2-chimera:free",
+                    messages: [
+                        {
+                            role: 'user',
+                            content: pdfPrompt
+                        }
+                    ],
+                    maxOutputTokens: 5000
+                });
 
-                const response = await retryGeminiApiCall(requestBody);
-                const data = await response.json();
-                rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                rawText = extractOpenRouterText(data);
+
+                if (!rawText) {
+                    throw new Error("No response content from OpenRouter API for PDF processing");
+                }
             }
 
             // Parse output
             let newMcqs: any[] = [];
             try {
-                newMcqs = parseOpenRouterJson(rawText);
+                // Remove markdown code blocks if present
+                const cleanedText = rawText.replace(/```json\n?|\n?```/g, "").trim();
+                newMcqs = JSON.parse(cleanedText);
             } catch {
                 // Fallback: try regex parsing
                 const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
@@ -227,9 +259,9 @@ Example (structure only):
             quiz = await QuizModel.findById(quizId);
         }
 
-        // ✅ Randomly pick 40 questions
+        // ✅ Randomly pick 20 questions from the pool of 40
         const shuffled = [...cachedQuestions].sort(() => 0.5 - Math.random());
-        const questionsToReturn = shuffled.slice(0, 40).map((q) => ({
+        const questionsToReturn = shuffled.slice(0, RETURN_COUNT).map((q) => ({
             _id: q._id,
             question: q.question,
             options: q.options,
@@ -243,7 +275,8 @@ Example (structure only):
                 title: quiz?.title || quizTitle,
                 questions: questionsToReturn,
             },
-            totalQuestions: 15,
+            totalQuestions: RETURN_COUNT,
+            poolSize: cachedQuestions.length,
         });
     } catch (error) {
         console.error("Error creating quiz:", error);
@@ -598,24 +631,45 @@ const practiceMode = asyncWrapper(async (req, res, next) => {
 
         // ✅ Load from DB if cache empty - include answer and explanation for practice mode
         if (cachedQuestions.length === 0) {
-            const existingQuiz = await QuizModel.findOne({ chapterId }).populate("questions");
+            const existingQuizzes = await QuizModel.find({ chapterId }).populate("questions");
 
-            if (existingQuiz) {
-                quiz = existingQuiz;
-                quizId = existingQuiz._id.toString();
-                quizTitle = existingQuiz.title;
-                cachedQuestions = existingQuiz.questions.map((q: any) => ({
+            if (existingQuizzes.length > 0) {
+                quiz = existingQuizzes[0];
+                quizId = quiz._id.toString();
+                quizTitle = quiz.title;
+
+                // Aggregate unique questions with answers
+                const uniqueQs = new Map();
+                existingQuizzes.forEach((qz: any) => {
+                    if (qz.questions) {
+                        qz.questions.forEach((q: any) => {
+                            if (q && q._id) uniqueQs.set(q._id.toString(), q);
+                        });
+                    }
+                });
+
+                cachedQuestions = Array.from(uniqueQs.values()).map((q: any) => ({
                     _id: q._id,
                     question: q.question,
                     options: q.options,
                     answer: q.answer,
                     explanation: q.explanation || "",
                 }));
+
+                // Cache it
+                await CacheHelper.cacheQuiz(
+                    chapterId,
+                    { quizId: quizId as string, title: quizTitle, questions: cachedQuestions },
+                    CacheKeys.TTL.ONE_DAY
+                );
             }
         }
 
-        // ✅ Generate new questions if less than 50
-        if (cachedQuestions.length < 50) {
+        // ✅ Generate new questions if less than 40 (target pool size)
+        const TARGET_POOL_SIZE = 40;
+        const RETURN_COUNT = 20;
+
+        if (cachedQuestions.length < TARGET_POOL_SIZE) {
             const chapter = await ChapterModel.findById(chapterId);
 
             if (!chapter) {
@@ -629,83 +683,95 @@ const practiceMode = asyncWrapper(async (req, res, next) => {
             }
 
             quizTitle = chapter.title;
-            const needed = 50 - cachedQuestions.length;
+            const needed = TARGET_POOL_SIZE - cachedQuestions.length;
             const existingTexts = cachedQuestions.map((q) => `- ${q.question}`).join("\n");
 
-            const systemPrompt = `Role: Expert Exam Preparer AI.
+            const systemPrompt = `You are a senior professor creating a FINAL EXAM. Generate smart, direct multiple-choice questions.
 
-Task:
-- Create exactly ${needed} exam-style multiple-choice questions based ONLY on the provided chapter content.
+CRITICAL INSTRUCTIONS:
+1. PARAPHRASE - Never copy text directly from the content. Rephrase concepts in your own words.
+2. TEST UNDERSTANDING - Questions should verify the student truly understands, not just memorized text.
+3. BE DIRECT - Ask clear, straightforward questions. No unnecessary complexity.
+4. EXAM QUALITY - Questions must be professional, like a real university exam.
 
-Hard constraints (must follow exactly):
-- Source: Use ONLY the provided chapter content. Do NOT use external knowledge.
-- Uniqueness: Do NOT duplicate or closely rephrase any existing question below:
+QUESTION STYLE:
+- Use active voice and clear language
+- Test: understanding of concepts, ability to distinguish similar terms, cause-effect relationships, practical applications
+- Good: "What is the main purpose of X?" / "Which best describes Y?" / "How does A affect B?"
+- Avoid: "According to..." / "The text states..." / "As mentioned..."
+
+SMART QUESTION EXAMPLES:
+- Instead of "What is photosynthesis?" → "What is the primary outcome of photosynthesis in plants?"
+- Instead of copying a definition → Ask about its function, importance, or relationship to other concepts
+- Test recognition of correct vs incorrect statements about key topics
+
+REQUIREMENTS:
+- ${needed} questions total
+- 4 options each: a), b), c), d)
+- One correct answer (a/b/c/d)
+- Brief explanation (paraphrased, no quotes from source)
+- All options must be plausible
+
+SKIP IF SIMILAR TO:
 ${existingTexts}
-- Quantity: Output exactly ${needed} items.
-- Output format: Return ONLY a VALID JSON ARRAY (no markdown, no code fences, no extra text).
-- Schema: Each item MUST be an object with exactly these keys:
-  - "question": string
-  - "options": array of exactly 4 strings, each starting with "a)", "b)", "c)", "d)" respectively
-  - "answer": one of "a" | "b" | "c" | "d" (must match the correct option)
-  - "explanation": short string that justifies the answer using information explicitly present in the chapter
 
-Quality requirements:
-- Coverage: Spread questions across the whole chapter; include definitions, mechanisms, comparisons, steps, and implications.
-- Difficulty mix: Include recall + conceptual understanding + application/interpretation.
-- Distractors: Make wrong options plausible but clearly incorrect according to the chapter.
-- Precision: Avoid ambiguous wording (e.g., "all of the above"). Avoid trivia not supported by the text.
-- JSON safety: Use double quotes for all JSON strings and do not include trailing commas.
-
-Example (structure only):
-[
-  {
-    "question": "...",
-    "options": ["a) ...", "b) ...", "c) ...", "d) ..."],
-    "answer": "a",
-    "explanation": "..."
-  }
-]`;
+OUTPUT FORMAT (JSON array only):
+[{"question":"...","options":["a) ...","b) ...","c) ...","d) ..."],"answer":"a","explanation":"..."}]`;
 
             let rawText: string;
 
-            // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
             if (hasOvercontent) {
-                const openRouterResponse = await callOpenRouterApi({
-                    model: 'openrouter/auto',
+                // Use OpenRouter with extracted text
+                const geminiPrompt = `${systemPrompt}
+
+REFERENCE MATERIAL (use facts only, do not mention this source):
+${chapter.overcontent}
+
+Generate ${needed} exam questions now.`;
+
+                const data = await callOpenRouterApi({
+                    model: "tngtech/deepseek-r1t2-chimera:free",
                     messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.` }
+                        { role: 'user', content: geminiPrompt }
                     ],
-                    temperature: 0.7
+                    maxOutputTokens: 5000
                 });
-                rawText = extractOpenRouterText(openRouterResponse);
+
+                rawText = extractOpenRouterText(data);
+
+                if (!rawText) {
+                    console.error("OpenRouter Empty Response:", JSON.stringify(data, null, 2));
+                    throw new Error("No response content from OpenRouter API");
+                }
             } else {
-                // Fallback to Gemini for PDF content
+                // PDF content without extracted text - OpenRouter fallback
                 const base64File = chapter.content.toString("base64");
-                const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-                const geminiPrompt = `${systemPrompt}\n\nChapter Content in the attached PDF.\n\nGenerate ${needed} quiz questions from the PDF content.`;
+                const pdfPrompt = `${systemPrompt}\n\nProcess PDF content and generate ${needed} quiz questions.`;
 
-                const requestBody = {
-                    contents: [{
-                        parts: [
-                            { text: geminiPrompt },
-                            { inlineData: { mimeType, data: base64File } }
-                        ]
-                    }],
-                    generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
-                };
+                const data = await callOpenRouterApi({
+                    model: "tngtech/deepseek-r1t2-chimera:free",
+                    messages: [
+                        {
+                            role: 'user',
+                            content: pdfPrompt
+                        }
+                    ],
+                    maxOutputTokens: 5000
+                });
 
-                const response = await retryGeminiApiCall(requestBody);
-                const data = await response.json();
-                rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                rawText = extractOpenRouterText(data);
+
+                if (!rawText) {
+                    throw new Error("No response content from OpenRouter API for PDF processing");
+                }
             }
 
             // Parse output
             let newMcqs: any[] = [];
             try {
-                newMcqs = parseOpenRouterJson(rawText);
+                const cleanedText = rawText.replace(/```json\n?|\n?```/g, "").trim();
+                newMcqs = JSON.parse(cleanedText);
             } catch {
-                // Fallback: try regex parsing
                 const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;
                 const matches = [...rawText.matchAll(pattern)];
 
@@ -772,6 +838,13 @@ Example (structure only):
                     explanation: q.explanation || "",
                 }))
             );
+
+            // ✅ Update cache
+            await CacheHelper.cacheQuiz(
+                chapterId,
+                { quizId: quiz._id.toString(), title: quizTitle, questions: cachedQuestions },
+                CacheKeys.TTL.ONE_DAY
+            );
         }
 
         // Get quiz if not loaded
@@ -792,9 +865,9 @@ Example (structure only):
             }));
         }
 
-        // ✅ Randomly pick 30 questions for practice mode
+        // ✅ Randomly pick 20 questions from the pool of 40 for practice mode
         const shuffled = [...cachedQuestions].sort(() => 0.5 - Math.random());
-        const questionsToReturn = shuffled.slice(0, 30).map((q) => ({
+        const questionsToReturn = shuffled.slice(0, RETURN_COUNT).map((q) => ({
             _id: q._id,
             question: q.question,
             options: q.options,
@@ -810,7 +883,8 @@ Example (structure only):
                 title: quiz?.title || quizTitle,
                 questions: questionsToReturn,
             },
-            totalQuestions: 30,
+            totalQuestions: RETURN_COUNT,
+            poolSize: cachedQuestions.length,
         });
     } catch (error) {
         console.error("Error in practice mode:", error);

@@ -162,21 +162,52 @@ export const createChapterService = async (
         const requestBody = {
             contents: [{
                 parts: [
-                    { text: `You are an expert educational content extractor. Your goal is to convert the provided PDF into a rich, detailed, and structured text format perfectly optimized for generating high-quality summaries and quizzes.\n\n**Core Responsibilities:**\n1. **Deep Extraction:** Capture EVERY educational detail. Do not summarize. Include:\n    * Full explanations of concepts.\n    * All examples, case studies, and scenarios.\n    * Technical details, formulas, and data points.\n    * Code blocks and algorithms (preserve exact formatting).\n2. **Question Handling (CRITICAL):** If the PDF contains questions (practice problems, review questions, etc.), you MUST extract them and treat them as critical verification rules.\n    * Label them clearly as "[Existing Question]: <Question Text>"\n    * If answers are provided, include them.\n3. **Noise Elimination:** Remove headers, footers, page numbers, author names, references, and watermarks. Keep only the learning content.\n4. **Smart Structuring:** Use Markdown.\n    * # for Chapters, ## for Sections, ### for Subsections.\n    * Use bullet points for lists.\n    * **Bold** key terms and definitions.\n\n**Output:** A single, comprehensive Markdown string containing the raw, detailed knowledge from the document.` },
+                    {
+                        text: `You are an expert at extracting educational content from PDFs.
+
+YOUR GOAL: Convert the PDF into a detailed, structured Markdown format optimized for learning.
+
+EXTRACTION RULES:
+1. NO SUMMARIZING - Capture all actual knowledge, facts, and explanations.
+2. FULL DETAIL - Include deep explanations, examples, formulas, and technical data.
+3. SMART STRUCTURE:
+   - Use # for Chapters, ## for Sections, ### for Subsections.
+   - Use **Bold** for key concepts and definitions.
+   - Use bullet points for lists.
+   - Preserver code block formatting.
+4. HANDLE QUESTIONS - If the PDF has review questions, extract them exactly as: "[Existing Question]: <text>".
+5. CLEANUP - Remove all headers, footers, page numbers, and non-educational noise.
+
+OUTPUT: Comprehensive Markdown string representing the full knowledge of the document.` },
                     { inlineData: { mimeType: file.mimetype, data: base64 } }
                 ]
             }],
-            generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
+            generationConfig: { temperature: 0.5, maxOutputTokens: 16384 },
         };
 
         await updateChapterJobProgress(user._id.toString(), 25, "Starting content extraction");
 
-        const response = await retryGeminiApiCall(requestBody);
+        let response;
+        try {
+            response = await retryGeminiApiCall(requestBody);
+        } catch (geminiError: any) {
+            console.error("Gemini API call failed:", geminiError);
+            await failChapterJob(user._id.toString(), "Server is busy. Please try again later.");
+            throw ErrorHandler.createError("Server is busy. Please try again later.", 503);
+        }
+
         const data = await response.json();
 
         await updateChapterJobProgress(user._id.toString(), 50, "Extraction service responded");
 
         const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (!extractedText) {
+            console.error("Gemini API returned no extracted text:", JSON.stringify(data, null, 2));
+            await failChapterJob(user._id.toString(), "Server is busy. Please try again later.");
+            throw ErrorHandler.createError("Server is busy. Please try again later.", 503);
+        }
+
         chapter = await ChapterModel.create({
             content: file.buffer,
             contentType: file.mimetype,
@@ -205,37 +236,17 @@ export const createChapterService = async (
 
         await completeChapterJob(user._id.toString(), chapter._id.toString());
         return { chapter, extractedText };
-    } catch (e) {
-        // Even if extraction fails, we might still have created a chapter (or not)
-        // If chapter wasn't created yet, create it now without extracted text
-        if (!chapter) {
-            chapter = await ChapterModel.create({
-                content: file.buffer,
-                contentType: file.mimetype,
-                createdBy: user._id,
-                updatedBy: user._id,
-                folderId,
-                overcontent: null,
-                title,
-                description,
-                category,
-            });
+    } catch (e: any) {
+        console.error("[ChapterService] Error during chapter creation:", e);
+
+        // If it's already our custom error (server is busy), re-throw it
+        if (e.statuscode === 503) {
+            throw e;
         }
 
-        // If we have a chapter, we consider it a success but with extraction failure? 
-        // Or should we mark the job as failed? 
-        // The original code returned the chapter even on error.
-        // Let's mark it as completed but maybe with a warning in message if we want, 
-        // but to keep consistent with original logic:
-
-        await completeChapterJob(user._id.toString(), chapter._id.toString());
-
-        // Note: If the error was critical enough that chapter creation failed, 
-        // the catch block in the controller would catch it. 
-        // But here we are catching extraction errors specifically?
-        // Actually the original code caught ALL errors in this block and created a chapter without content.
-
-        return { chapter, extractedText: null };
+        // For any other errors, fail the job and return server busy
+        await failChapterJob(user._id.toString(), "Server is busy. Please try again later.");
+        throw ErrorHandler.createError("Server is busy. Please try again later.", 503);
     }
 };
 

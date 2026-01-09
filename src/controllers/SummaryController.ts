@@ -5,8 +5,7 @@ import { AnalysisService } from "../services/analysisService";
 import { CacheKeys } from "../utils/cache_keys";
 import CacheHelper from "../utils/cacheHelper";
 import ErrorHandler from "../utils/error";
-import { getMimeType, retryGeminiApiCall } from "../utils/geminiApi";
-import { callOpenRouterApi, extractOpenRouterText, parseOpenRouterJson } from "../utils/openRouterApi";
+import { callOpenRouterApi, extractOpenRouterText } from "../utils/openRouterApi";
 
 const summarizecchapter = asyncWrapper(async (req, res, next) => {
     const { chapterId } = req.body;
@@ -54,94 +53,117 @@ const summarizecchapter = asyncWrapper(async (req, res, next) => {
         }
     }
 
-    // ✅ Generate new summary - use OpenRouter if overcontent exists, otherwise fallback to Gemini
+    // ✅ Generate new summary - use OpenRouter for text content
     const hasOvercontent = chapter.overcontent && chapter.overcontent.trim().length > 0;
 
     if (!hasOvercontent && !Buffer.isBuffer(chapter.content)) {
         return next(ErrorHandler.createError("Chapter content is missing", 400));
     }
 
-    const systemPrompt = `You are an expert AI educator. Generate a structured, high-quality JSON summary of educational content using this schema:
+    const systemPrompt = `You are an expert educator. Generate a clear, well-structured JSON summary.
 
+OUTPUT SCHEMA:
 {
-  "chapter_title": "string",
+  "chapter_title": "Topic Name",
   "chapter_overview": {
-    "title": "Chapter Overview",
-    "summary": "A clear, 5–8 sentence paragraph that explains the topic comprehensively in natural language. It should cover what the concept is, why it matters, and its main principles or mechanisms."
+    "title": "Overview",
+    "summary": "5-8 sentences explaining what this topic is, why it matters, and its core principles. Write clearly and directly."
   },
   "key_takeaways": [
-    "4–6 short bullet points summarizing the essential facts or principles."
+    "4-6 essential points - the most important things to remember"
   ],
   "key_points": [
     {
-      "title": "Concept or Subtopic Title",
+      "title": "Concept Name",
       "type": "concept | important | example",
-      "content": "2–4 sentences explaining the idea, how it works, and why it's important. Write in an educational and concise style."
+      "content": "2-3 sentences explaining what it is and why it matters. Be concise."
     }
   ],
   "definitions": [
     {
       "term": "Key Term",
-      "definition": "Concise, clear definition that explains the meaning in one or two sentences."
+      "definition": "Clear, 1-2 sentence definition in plain language."
     }
   ],
   "flashcards": [
     {
-      "question": "A direct question that tests understanding of a concept",
-      "answer": "A concise factual answer (1–2 sentences)."
+      "question": "Direct question testing understanding",
+      "answer": "Concise factual answer (1-2 sentences)"
     }
   ]
 }
 
-Guidelines:
-- Output **only valid JSON** — no Markdown, no extra commentary, no quotes around keys that aren't needed.
-- Write in clear, accessible academic English for undergraduate computer science students.
-- Be accurate, concise, and educational.
-- Fill all fields meaningfully, even if the source text lacks detail (infer sensibly).
-- Focus on conceptual clarity, real-world relevance, and test-ready phrasing for flashcards.`;
+WRITING RULES:
+1. BE DIRECT - No filler words or unnecessary complexity
+2. PARAPHRASE - Restate concepts in your own words, don't copy text
+3. BE EDUCATIONAL - Write for students who need to understand and remember
+4. BE ACCURATE - Only include information from the source content
+5. USE PLAIN LANGUAGE - Explain complex ideas simply
+
+OUTPUT: Valid JSON only (no markdown, no commentary)`;
 
     let summaryJson;
     let rawText: string = "";
 
-    // ✅ Use OpenRouter if overcontent exists, otherwise fallback to Gemini
+    // ✅ Use OpenRouter for text content
     if (hasOvercontent) {
-        const openRouterResponse = await callOpenRouterApi({
-            model: 'openrouter/auto',
+        // Use OpenRouter with extracted text
+        const prompt = `${systemPrompt}
+
+Generate the JSON summary for this chapter content:
+
+${chapter.overcontent}`;
+
+        const data = await callOpenRouterApi({
+            model: "tngtech/deepseek-r1t2-chimera:free",
             messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: `Generate the JSON summary for this chapter content:\n\n${chapter.overcontent}` }
+                { role: 'user', content: prompt }
             ],
-            temperature: 0.5
+            maxOutputTokens: 16384
         });
-        rawText = extractOpenRouterText(openRouterResponse);
+
+        rawText = extractOpenRouterText(data);
+
+        if (!rawText) {
+            console.error("OpenRouter Empty Response:", JSON.stringify(data, null, 2));
+            return next(ErrorHandler.createError("No response content from OpenRouter API. Please check API response.", 500));
+        }
     } else {
-        // Fallback to Gemini for PDF content
-        const base64File = chapter.content ? chapter.content.toString("base64") : "";
-        const mimeType = getMimeType("chapter.pdf", chapter.contentType);
-        const geminiPrompt = `${systemPrompt}\n\nNow generate the JSON summary for the chapter content in this PDF.`;
+        // PDF content without extracted text - OpenRouter fallback
+        const prompt = `${systemPrompt}\n\nGenerate a JSON summary from the provided PDF content.`;
 
-        const requestBody: any = {
-            contents: [
-                {
-                    parts: [
-                        { text: geminiPrompt },
-                        { inlineData: { mimeType, data: base64File } },
-                    ],
-                },
+        const data = await callOpenRouterApi({
+            model: "tngtech/deepseek-r1t2-chimera:free",
+            messages: [
+                { role: 'user', content: prompt }
             ],
-            generationConfig: { temperature: 0.5, maxOutputTokens: 8192 },
-        };
+            maxOutputTokens: 16384
+        });
 
-        const response = await retryGeminiApiCall(requestBody);
-        const data = await response.json();
-        rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        rawText = extractOpenRouterText(data);
+
+        if (!rawText) {
+            console.error("OpenRouter Empty Response (PDF):", JSON.stringify(data, null, 2));
+            return next(ErrorHandler.createError("No response content from OpenRouter API. Please check API response.", 500));
+        }
     }
 
     // Parse output
     try {
-        summaryJson = parseOpenRouterJson(rawText);
+        // Remove markdown code blocks if present
+        const cleanedText = rawText.replace(/```json\n?|\n?```/g, "").trim();
+        summaryJson = JSON.parse(cleanedText);
     } catch {
-        return next(ErrorHandler.createError("Invalid JSON response from AI service", 400));
+        // Retry parsing with repair if needed
+        try {
+            // Basic manual repair for common issues
+            const fixedText = rawText.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+            const cleanedText = fixedText.replace(/```json\n?|\n?```/g, "").trim();
+            summaryJson = JSON.parse(cleanedText);
+        } catch (e) {
+            console.error("JSON Parse Error:", e);
+            return next(ErrorHandler.createError("Invalid JSON response from AI service", 400));
+        }
     }
 
     // Save in MongoDB

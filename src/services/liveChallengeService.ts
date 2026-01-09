@@ -8,7 +8,6 @@ import QuizModel from '../models/QuizModel';
 import ErrorHandler from '../utils/error';
 import { admin } from '../utils/firebase';
 import { getMimeType, retryGeminiApiCall } from '../utils/geminiApi';
-import { callOpenRouterApi, extractOpenRouterText, parseOpenRouterJson } from '../utils/openRouterApi';
 import { ProfileService } from './profileService';
 
 const db = admin.database();
@@ -102,51 +101,66 @@ export class LiveChallengeService {
 		}
 
 		const needed = 50;
-		const systemPrompt = `You are an AI assistant that creates multiple choice quizzes based on educational content.
+		const systemPrompt = `You are a senior professor creating a FINAL EXAM. Generate smart, direct multiple-choice questions.
 
-IMPORTANT INSTRUCTIONS:
-1. Read and analyze the provided chapter content carefully
-2. Generate exactly ${needed} new questions ONLY from the information contained in this specific chapter
-3. Questions must be directly related to the topics, concepts, and information present in the chapter content
-4. Do NOT create generic questions or questions from outside knowledge
-5. Each question should test understanding of specific content from the chapter
-6. Do NOT repeat any questions
+CRITICAL RULES:
+1. PARAPHRASE - Never copy text directly. Rephrase all concepts in your own words.
+2. TEST UNDERSTANDING - Questions verify real comprehension, not memorization.
+3. BE DIRECT - Clear, straightforward questions without unnecessary complexity.
+4. EXAM QUALITY - Professional university exam standard.
 
-Requirements for each question:
-- Must be answerable using only information from the chapter
-- Should test key concepts, facts, or principles from the content
-- Include 4 distinct options (labeled a, b, c, d)
-- Only one option should be correct
-- Provide a clear explanation referencing the chapter content
+QUESTION STYLE:
+- Use active voice and clear language
+- Test: concept understanding, term distinctions, cause-effect, practical applications
+- Good examples: "What is the main purpose of X?" / "Which best describes Y?" / "How does A affect B?"
+- AVOID: "According to..." / "The text states..." / "As mentioned..." / "From the chapter..."
 
-Output Format (JSON array only, no additional text):
-[
-  {
-    "question": "Your question text based on chapter content?",
-    "options": ["a) Option1", "b) Option2", "c) Option3", "d) Option4"],
-    "answer": "a",
-    "explanation": "Brief explanation referencing the chapter content."
-  }
-]`;
+SMART QUESTIONS:
+- Ask about function, importance, or relationships rather than copying definitions
+- Test recognition of correct vs incorrect statements
+- Focus on key concepts and their applications
 
+FORMAT:
+- ${needed} questions total
+- 4 options each: a), b), c), d)
+- One correct answer (a/b/c/d)
+- Brief explanation (paraphrased, no source quotes)
+
+OUTPUT (JSON array only):
+[{"question":"...","options":["a) ...","b) ...","c) ...","d) ..."],"answer":"a","explanation":"..."}]`;
+
+
+		// ✅ Use Gemini for both text and PDF content (Unified path)
 		let rawText: string;
 
 		if (hasOvercontent) {
-			// Use OpenRouter with extracted text (fast path)
-			const userPrompt = `Chapter Content:\n${chapter.overcontent}\n\nGenerate ${needed} quiz questions from this content.`;
+			// Use Gemini with extracted text (fast path)
+			const geminiPrompt = `${systemPrompt}
+
+Chapter Content:
+${chapter.overcontent}
+
+Generate ${needed} quiz questions from this content.`;
 
 			try {
-				const response = await callOpenRouterApi({
-					model: 'openrouter/auto',
-					messages: [
-						{ role: 'system', content: systemPrompt },
-						{ role: 'user', content: userPrompt }
-					],
-					temperature: 0.7
+				const response = await retryGeminiApiCall({
+					contents: [{
+						parts: [
+							{ text: geminiPrompt }
+						]
+					}],
+					generationConfig: { temperature: 0.7, maxOutputTokens: 16384 }
 				});
-				rawText = extractOpenRouterText(response);
+
+				const data = await response.json();
+
+				if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+					throw new Error("No response from Gemini API");
+				}
+
+				rawText = data.candidates[0].content.parts[0].text.trim();
 			} catch (apiErr) {
-				console.error('OpenRouter API error:', apiErr);
+				console.error('Gemini API error:', apiErr);
 				throw new Error('Failed to generate quiz questions');
 			}
 		} else {
@@ -166,7 +180,7 @@ Output Format (JSON array only, no additional text):
 							{ inlineData: { mimeType, data: base64File } }
 						]
 					}],
-					generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+					generationConfig: { temperature: 0.7, maxOutputTokens: 16384 },
 				});
 				const data = await response.json();
 				rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -176,10 +190,12 @@ Output Format (JSON array only, no additional text):
 			}
 		}
 
-		// Parse output (works for both OpenRouter and Gemini)
+		// Parse output
 		let newMcqs: any[] = [];
 		try {
-			newMcqs = parseOpenRouterJson(rawText);
+			// Remove markdown code blocks if present
+			const cleanedText = rawText.replace(/```json\n?|\n?```/g, "").trim();
+			newMcqs = JSON.parse(cleanedText);
 		} catch (parseErr) {
 			// Fallback: try regex parsing
 			const pattern = /\{\s*"question"\s*:\s*"([^"]+)",\s*"options"\s*:\s*\[([^\]]+)\],\s*"answer"\s*:\s*"([a-d])",\s*"explanation"\s*:\s*"([^"]+)"\s*\}/gm;

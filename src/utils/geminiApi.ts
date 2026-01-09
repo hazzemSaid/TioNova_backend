@@ -11,13 +11,13 @@ function getApiKey(): string {
 function buildPrimaryEndpoints(): string[] {
    const apiKey = getApiKey();
    const baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
-      // Only include endpoints known to work for v1beta/generateContent
-      return [
-         `${baseUrl}/gemini-2.5-flash:generateContent?key=${apiKey}`,
-         // `${baseUrl}/gemini-1.5-flash:generateContent?key=${apiKey}`,
-         // `${baseUrl}/gemini-1.5-flash-8b:generateContent?key=${apiKey}`,
-         // `${baseUrl}/gemini-1.5-pro:generateContent?key=${apiKey}` // REMOVED: not supported for v1beta/generateContent
-      ];
+   // Only include endpoints known to work for v1beta/generateContent
+   return [
+      `${baseUrl}/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      // `${baseUrl}/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      // `${baseUrl}/gemini-1.5-flash-8b:generateContent?key=${apiKey}`,
+      // `${baseUrl}/gemini-1.5-pro:generateContent?key=${apiKey}` // REMOVED: not supported for v1beta/generateContent
+   ];
 }
 
 let primaryEndpoints: string[] | null = null;
@@ -37,7 +37,7 @@ export async function retryGeminiApiCall(requestBody: any, maxRetries = 2, initi
       requestBody.generationConfig = {};
    }
    if (!requestBody.generationConfig.maxOutputTokens) {
-      requestBody.generationConfig.maxOutputTokens = 8192;
+      requestBody.generationConfig.maxOutputTokens = 16384;
    }
    if (!requestBody.generationConfig.temperature) {
       requestBody.generationConfig.temperature = 0.7;

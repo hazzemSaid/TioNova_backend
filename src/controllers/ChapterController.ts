@@ -9,6 +9,10 @@ const createchapter = asyncWrapper(async (req, res, next) => {
         let chapterObj;
         let chapterResponse;
         if (req.body.contentType === "application/pdf" || req.file) {
+            // Validate that file is present
+            if (!req.file) {
+                return next(ErrorHandler.createError("PDF file is required. Please upload a file.", 400));
+            }
             // No longer passing sendEventToUser
             result = await createChapterService(req.user, req.body, req.file);
             chapterObj = typeof result.chapter.toObject === 'function' ? result.chapter.toObject() : result.chapter;

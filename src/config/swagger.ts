@@ -7,10 +7,8 @@ let swaggerSpec: object;
 try {
 	// This file is generated during build by scripts/generateSwagger.ts
 	swaggerSpec = require("./swagger-spec.json");
-	console.log("✅ Loaded pre-generated swagger spec");
 } catch {
 	// Fallback to dynamic generation (for local development)
-	console.log("⚠️ Pre-generated swagger spec not found, generating dynamically...");
 	
 	const options = {
 		definition: {

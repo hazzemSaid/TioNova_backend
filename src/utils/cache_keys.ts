@@ -3,6 +3,9 @@
 export class CacheKeys {
     // ==================== TTL Constants ====================
     static readonly TTL = {
+        ONE_MINUTE: 60,           // 1 minute
+        TWO_MINUTES: 120,         // 2 minutes
+        FIVE_MINUTES: 300,         // 5 minutes
         ONE_HOUR: 3600,           // 1 hour
         SIX_HOURS: 21600,         // 6 hours
         ONE_DAY: 86400,           // 1 day
@@ -163,21 +166,22 @@ export class CacheKeys {
      * Get recommended TTL based on data type
      */
     static getRecommendedTTL(dataType: 'content' | 'list' | 'metadata' | 'search' | 'quiz' | 'summary'): number {
+        return this.TTL.ONE_MINUTE;
         switch (dataType) {
-            case 'content':
-                return this.TTL.ONE_WEEK;      // Content rarely changes
-            case 'list':
-                return this.TTL.SIX_HOURS;     // Lists change more frequently
-            case 'metadata':
-                return this.TTL.ONE_DAY;       // Metadata moderate frequency
-            case 'search':
-                return this.TTL.ONE_HOUR;      // Search results change often
-            case 'quiz':
-                return this.TTL.ONE_DAY;       // Quiz data moderate frequency
-            case 'summary':
-                return this.TTL.ONE_WEEK;      // Summaries rarely change
-            default:
-                return this.TTL.ONE_HOUR;      // Default safe value
+            // case 'content':
+            //     return this.TTL.ONE_WEEK;      // Content rarely changes
+            // case 'list':
+            //     return this.TTL.SIX_HOURS;     // Lists change more frequently
+            // case 'metadata':
+            //     return this.TTL.ONE_DAY;       // Metadata moderate frequency
+            // case 'search':
+            //     return this.TTL.ONE_HOUR;      // Search results change often
+            // case 'quiz':
+            //     return this.TTL.ONE_DAY;       // Quiz data moderate frequency
+            // case 'summary':
+            //     return this.TTL.ONE_WEEK;      // Summaries rarely change
+            // default:
+            //     return this.TTL.ONE_HOUR;      // Default safe value
         }
     }
     static getMindmapKey(chapterId: string): string {

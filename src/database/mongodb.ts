@@ -5,34 +5,49 @@ import mongoose from "mongoose";
 
 dotenv.config();
 
+// Cache the connection promise for serverless reuse
+let cachedConnection: Promise<typeof mongoose> | null = null;
+
 export async function connectDB() {
+	// If already connected, return immediately
+	if (mongoose.connection.readyState === 1) {
+		return;
+	}
+
+	// If connecting, wait for the cached promise
+	if (cachedConnection) {
+		await cachedConnection;
+		return;
+	}
+
 	try {
-		console.log("🔄 Attempting to connect to MongoDB...");
-		console.log("📍 MongoDB URI:", process.env.MONGO_URI ? "URI is set" : "URI is missing");
 		
 		if (!process.env.MONGO_URI) {
 			throw new Error("MONGO_URI environment variable is not set");
 		}
 		
-		// Log the masked URI for debugging (hide password)
-		const maskedUri = process.env.MONGO_URI.replace(/\/\/([^:]+):([^@]+)@/, "//***:***@");
-		console.log("🔗 Connecting to:", maskedUri);
-		
-		await mongoose.connect(process.env.MONGO_URI as string, {
-			// optional configs
+		// Create connection promise and cache it
+		cachedConnection = mongoose.connect(process.env.MONGO_URI as string, {
 			autoIndex: true,
+			serverSelectionTimeoutMS: 30000, // 30 seconds to find server
+			connectTimeoutMS: 30000, // 30 seconds to establish connection
+			socketTimeoutMS: 45000, // 45 seconds for ongoing operations
+			bufferCommands: false, // Disable buffering to fail fast
+			maxPoolSize: 10,
+			minPoolSize: 1, // Reduced for serverless
 		});
 		
-		console.log("✅ Connected to MongoDB successfully!");
-		console.log("📊 Database name:", mongoose.connection.name);
-		console.log("🌐 Connection state:", mongoose.connection.readyState);
+		await cachedConnection;
+		
 	} catch (error) {
 		console.error("❌ MongoDB connection error:", error);
-		console.error("🔍 Error details:", {
-			name: (error as Error).name,
-			message: (error as Error).message,
-			code: (error as any).code
-		});
-		process.exit(1);
+		cachedConnection = null; // Clear cache on error
+		
+		// In serverless, don't exit process - let request fail gracefully
+		if (!process.env.VERCEL) {
+			process.exit(1);
+		} else {
+			throw error; // Re-throw for serverless error handling
+		}
 	}
 }

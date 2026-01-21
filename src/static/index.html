@@ -25,7 +25,6 @@
 
     <script>
       async function handleCredentialResponse(response) {
-        console.log("Google ID Token:", response.credential);
 
         try {
           const res = await fetch("http://localhost:3000/api/auth/google", {
@@ -35,7 +34,6 @@
           });
 
           const data = await res.json();
-          console.log("Backend response:", data);
         } catch (err) {
           console.error("Error calling backend:", err);
         }

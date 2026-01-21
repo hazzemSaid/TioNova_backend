@@ -8,10 +8,10 @@ const createchapter = asyncWrapper(async (req, res, next) => {
         let result;
         let chapterObj;
         let chapterResponse;
-        if (req.body.contentType === "application/pdf" || req.file) {
+        if (req.body.contentType === "application/pdf" || req.body.contentType === "application/vnd.openxmlformats-officedocument.presentationml.presentation" || req.file) {
             // Validate that file is present
             if (!req.file) {
-                return next(ErrorHandler.createError("PDF file is required. Please upload a file.", 400));
+                return next(ErrorHandler.createError("File is required. Please upload a PDF or PowerPoint file.", 400));
             }
             // No longer passing sendEventToUser
             result = await createChapterService(req.user, req.body, req.file);

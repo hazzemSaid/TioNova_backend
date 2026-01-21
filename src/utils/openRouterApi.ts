@@ -149,7 +149,6 @@ export function extractOpenRouterText(response: any): string {
     
     // For reasoning models (like DeepSeek R1), content might be in the reasoning field
     if (message.reasoning && message.reasoning.trim().length > 0) {
-        console.log("Using reasoning field instead of content field");
         return message.reasoning;
     }
     
@@ -157,7 +156,6 @@ export function extractOpenRouterText(response: any): string {
     if (message.reasoning_details && Array.isArray(message.reasoning_details) && message.reasoning_details.length > 0) {
         const reasoningText = message.reasoning_details[0]?.text;
         if (reasoningText && reasoningText.trim().length > 0) {
-            console.log("Using reasoning_details[0].text instead of content field");
             return reasoningText;
         }
     }

@@ -96,7 +96,6 @@ const createUserResponse = async (user: any, accessToken: string, refreshToken: 
 const register = asyncWrapper(async (req, res, next) => {
 	const errors = validationResult(req);
 	if (!errors.isEmpty()) {
-		console.log("error here");
 		return next(ErrorHandler.createError("Validation error", 422, errors.array()));
 	}
 

@@ -287,16 +287,16 @@ const login = asyncWrapper(async (req, res, next) => {
 			user.username,
 			(user as any).profilePicture
 		);
-		
+
 		// Sync profile picture from Profile to User if User has default/missing but Profile has custom
 		// This handles legacy users who updated their picture before we added it to UserModel
 		const profile = await ProfileService.getProfile(user._id.toString());
 		const defaultPic = 'https://res.cloudinary.com/dr5cpch1n/image/upload/v1752943485/Unknown_person_o3xaku.jpg';
-		
-		if (profile && profile.profilePicture && 
-			profile.profilePicture !== defaultPic && 
+
+		if (profile && profile.profilePicture &&
+			profile.profilePicture !== defaultPic &&
 			(!user.profilePicture || user.profilePicture === defaultPic)) {
-			
+
 			user.profilePicture = profile.profilePicture;
 			await user.save();
 			console.log(`Synced profile picture for user ${user._id}`);
@@ -321,7 +321,7 @@ const refreshToken = asyncWrapper(async (req, res, next) => {
 	console.log(refreshToken);
 
 	if (!refreshToken) {
-		return next(ErrorHandler.createError("Refresh token is required", 401));
+		return next(ErrorHandler.createError("Refresh token is required", 403));
 	}
 
 	try {
@@ -329,17 +329,17 @@ const refreshToken = asyncWrapper(async (req, res, next) => {
 		const user = await userModel.findById(decoded._id).select('+refreshtoken');
 		console.log(decoded);
 		if (!user) {
-			return next(ErrorHandler.createError("User not found", 404));
+			return next(ErrorHandler.createError("User not found", 403));
 		}
 
 		// Verify the refresh token hash
 		if (!user.refreshtoken) {
-			return next(ErrorHandler.createError("No active session found", 401));
+			return next(ErrorHandler.createError("No active session found", 403));
 		}
 
 		const isRefreshTokenValid = await compare(refreshToken, user.refreshtoken);
 		if (!isRefreshTokenValid) {
-			return next(ErrorHandler.createError("Invalid refresh token", 401));
+			return next(ErrorHandler.createError("Invalid refresh token", 403));
 		}
 
 		const { accessToken, refreshToken: newRefreshToken } = generateTokens(user);
@@ -351,7 +351,7 @@ const refreshToken = asyncWrapper(async (req, res, next) => {
 		const response = await createUserResponse(user, accessToken, newRefreshToken);
 		return res.status(200).json(response);
 	} catch (error) {
-		return next(ErrorHandler.createError("Invalid or expired refresh token", 401));
+		return next(ErrorHandler.createError("Invalid or expired refresh token", 403));
 	}
 });
 
@@ -526,7 +526,7 @@ const forgotPassword = asyncWrapper(async (req, res, next) => {
 
 		// Send reset email
 		await sendEmail(email, resetCode);
-		
+
 		return res.status(200).json({
 			success: true,
 			message: "Password reset code sent to your email"
